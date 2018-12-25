@@ -261,24 +261,32 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 	}(tlscon, clientrx, s.shutdownGroup)
 
 	// Pipe that pumps packets from the client tunrx channel into the client connection
-	// Exits on failing write after deferred conn.Close() or after deferred close(client.tunrx) by router
-	go func(txchan <-chan []byte, conn net.Conn) {
+	// This needs to continue pumping until the txchan is closed or the router could stall
+	// Exits after `close(client.tunrx)` by router
+	s.shutdownGroup.Add(1)
+	go func(txchan <-chan []byte, conn net.Conn, wait *sync.WaitGroup) {
+		// Signal shutdown waitgroup that we're done
+		defer wait.Done()
+		// A simple one-shot flag is used to skip the write after failure
+		failed := false
 		// Pump the transmit channel until it is closed
 		for buf := range txchan {
 			log.Print("server: conntx: sending packet to client")
 
-			//TODO: Any processing on packet from tun adapter
+			if !failed {
+				//TODO: Any processing on packet from tun adapter
 
-			n, err := conn.Write(buf)
-			log.Printf("server: conntx: wrote %d bytes", n)
-			if err != nil {
-				log.Printf("server: conntx(term): error while writing: %s", err)
-				// If the write errors, signal the rwerr channel
-				rwerr <- true
-				return
+				n, err := conn.Write(buf)
+				log.Printf("server: conntx: wrote %d bytes", n)
+				if err != nil {
+					log.Printf("server: conntx(term): error while writing: %s", err)
+					// If the write errors, signal the rwerr channel
+					rwerr <- true
+					failed = true
+				}
 			}
 		}
-	}(client.tunrx, tlscon)
+	}(client.tunrx, tlscon, s.shutdownGroup)
 
 	// Application-Layer Handshake
 	// Read first packet from client with a timeout
