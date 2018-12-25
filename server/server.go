@@ -364,11 +364,12 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 // Internal routing table is kept in sync by reading events from the statechan channel
 func routePackets(rxchan <-chan []byte, statechan <-chan ClientState) {
 	// routing table state used only in this goroutine
-	// routes are a mapping from client ip to a distinct client's tunrx channel
+	// routes are a mapping from client ip to a client's distinct tunrx channel
 	routes := make(map[uint32]chan<- []byte)
 
 	// Takes a ClientState message and updates the routes state from it
 	updateRoutes := func(state ClientState) {
+		// uint32 keys are used for the route map
 		ipint := ip2int(state.client.ip)
 		if state.transition == Connect {
 			log.Printf("serverrx: got client connect %s", state.client.name)
@@ -376,9 +377,11 @@ func routePackets(rxchan <-chan []byte, statechan <-chan ClientState) {
 			routes[ipint] = state.client.tunrx
 		} else {
 			log.Printf("serverrx: got client disconnect %s", state.client.name)
-			// Close the rx channel and remove the item from the routing table
-			close(routes[ipint])
+			// Remove the item from the routing table and then close the rx channel
+			// Once the disconnect message is recieved, the client handler has exited
 			delete(routes, ipint)
+			// We close this channel here to finally release the read side pump in response to the close
+			close(routes[ipint])
 		}
 	}
 
@@ -386,15 +389,13 @@ func routePackets(rxchan <-chan []byte, statechan <-chan ClientState) {
 		// serializing the state updates and state consumption in the same
 		// goroutine gives lock-free operation.
 		select {
-		// State messages update the routes map state
-		// We must not write to a client's channel after getting a disconnect for it
-		// because its tunrx channel is closed after disconnect
 		case state := <-statechan:
 			updateRoutes(state)
 			continue // Jump to top of loop for more possible state change messages
 		default: // This default causes this case to immediately be skipped if statechan is empty
 		}
 
+		// State messages update the routes map state
 		// Data routing consumes the routes map state when there are no client state messages waiting to modify it
 		// This repetition allows us to sleep the goroutine while there are no messages to process
 		// while being instantly responsive to new messages of either type
@@ -488,6 +489,7 @@ func main() {
 	tuntx := make(chan []byte)
 
 	// Producer that reads packets off of the tun interface and pushes them on the tunrx channel
+	// Packets put on the tunrx channel are read by the data router that decides where to send them
 	// TODO: Read ends when tun interface is closed/stopped?
 	mainwait.Add(1)
 	go func(tun *water.Interface, rxchan chan<- []byte) {
@@ -510,6 +512,7 @@ func main() {
 	}(iface, tunrx)
 
 	// Consumer that reads packets off of the tuntx channel and writes them to the tun interface
+	// Any packet received on the client tls socket is written to the tuntx channel by a goroutine in `serve()`
 	// TODO: Exits on write failure when tun interface is closed/stopped or when txchan is closed?
 	mainwait.Add(1)
 	go func(txchan <-chan []byte, tun *water.Interface) {
