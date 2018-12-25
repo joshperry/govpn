@@ -39,7 +39,7 @@ func NewService() *Service {
 	return s
 }
 
-// Defines an authenticated client connection
+// Defines the state for an authenticated client connection
 type Client struct {
 	ip       net.IP // client tunnel ip
 	publicip net.IP // client public ip
@@ -47,6 +47,9 @@ type Client struct {
 	tunrx    chan []byte
 }
 
+// Creates a new client given a tls connection
+// Validates and parses the client certificate values
+// Tracks ~static state of a vpn client connection for data routing and address reaping
 func NewClient(tlscon *tls.Conn) (*Client, error) {
 	ipstring := tlscon.RemoteAddr().String()
 
@@ -55,7 +58,7 @@ func NewClient(tlscon *tls.Conn) (*Client, error) {
 	log.Print(state)
 
 	// If client cert not provided, send back HTTP 403 response
-	// TODO: Also send same error if curve preference is not met
+	// TODO: Also send same error if curve preference is not met?
 	if len(state.PeerCertificates) == 0 {
 		return nil, errors.New("no peer cert provided")
 	}
@@ -75,25 +78,112 @@ func NewClient(tlscon *tls.Conn) (*Client, error) {
 	}, nil
 }
 
+// An "enum" of the transition state
 type Transition int
 
+// Of type Transition
 const (
 	_ Transition = iota
 	Connect
 	Disconnect
 )
 
+// Couples a transition state with the target client for
+// client state channel delivery
 type ClientState struct {
 	transition Transition
 	client     *Client
 }
 
-// Accept connections and spawn a goroutine to serve each one.
+//====
+// The outbound packet router
+
+// Happy path packets inbound from the tun adapter on the rxchan channel, are parsed for their destination IP,
+// then written to the client matching that address found in the routing table
+// Internal routing table is kept in sync by reading events from the statechan channel
+func routePackets(rxchan <-chan []byte, statechan <-chan ClientState) {
+	// routing table state used only in this goroutine
+	// routes are a mapping from client ip to a distinct client's tunrx channel
+	routes := make(map[uint32]chan<- []byte)
+	for {
+		// serializing the state updates and state consumption in the same
+		// goroutine gives lock-free operation.
+		select {
+		// State messages update the routes map state
+		// We must not write to a client's channel after getting a disconnect for it
+		// because its tunrx channel is closed after disconnect
+		case state := <-statechan:
+			ipint := ip2int(state.client.ip)
+			if state.transition == Connect {
+				log.Printf("serverrx: got client connect %s", state.client.name)
+				// Add an item to the routing table
+				routes[ipint] = state.client.tunrx
+			} else {
+				log.Printf("serverrx: got client disconnect %s", state.client.name)
+				// Close the rx channel and remove the item from the routing table
+				close(routes[ipint])
+				delete(routes, ipint)
+			}
+			continue // Jump to top of loop for more possible state change messages
+		default: // This default causes this case to immediately be skipped if statechan is empty
+		}
+
+		// Data routing consumes the routes map state when there are no client state messages waiting
+		// This repetition allows us to sleep the goroutine while there are no messages to process
+		// while being instantly responsive to new messages of either type
+		// TODO: Refactor DRY
+		select {
+		case state := <-statechan:
+			ipint := ip2int(state.client.ip)
+			if state.transition == Connect {
+				log.Printf("serverrx: got client connect %s", state.client.name)
+				// Add an item to the routing table
+				routes[ipint] = state.client.tunrx
+			} else {
+				log.Printf("serverrx: got client disconnect %s", state.client.name)
+				// Close the rx channel and remove the item from the routing table
+				close(routes[ipint])
+				delete(routes, ipint)
+			}
+			continue // Jump to top of loop for more possible state change messages
+
+		// Route packet to appropriate client tunrx channel
+		// Channel is closed when tun adapter read loop exits (in main)
+		case buf, ok := <-rxchan:
+			if !ok {
+				// If the receive channel is closed, exit the loop
+				return
+			}
+
+			// Get destination IP from packet
+			header, err := ipv4.ParseHeader(buf)
+			if err != nil {
+				// If we couldn't parse IP headers, drop the packet
+				log.Printf("serverrx(dropped): could not parse packet header: %s", err)
+				continue
+			}
+
+			clientip := header.Dst
+
+			log.Printf("serverrx: got %d byte tun packet for %s", len(buf), clientip)
+
+			// Lookup client in routing state
+			if clientrx, ok := routes[ip2int(clientip)]; ok {
+				// Send packet to client tunrx channel
+				clientrx <- buf
+			} else {
+				//TODO: Send ICMP unreachable if no client found
+			}
+		}
+	}
+}
+
+// Accept connections and spawn a goroutine to serve() each one.
 // Stop listening if anything is received on the done channel.
 // tuntx: channel to write packets from the client to the tun adapter
 // tunrx: channel to read packets for the clients from the tun adapter
 func (s *Service) Serve(listener net.Listener, tuntx chan<- []byte, tunrx <-chan []byte, servernet *net.IPNet) {
-	// Close the listener when the accept loop exits
+	// Close the listener when the server stops
 	defer listener.Close()
 
 	// Channel to send new tls connections to
@@ -103,13 +193,15 @@ func (s *Service) Serve(listener net.Listener, tuntx chan<- []byte, tunrx <-chan
 	clientstate := make(chan ClientState)
 
 	// Goroutine to pump the accept loop into a handler channel
-	// until Accept fails
-	go func(connhandler chan<- net.Conn) {
+	// Exits when Accept fails on deferred listener.Close()
+	go func(listener net.Listener, connhandler chan<- net.Conn) {
 		// Exit the wait group when the accept pump exits
 		defer s.shutdownGroup.Done()
+		defer close(connhandler)
 
 		for {
 			// Block waiting for a client connection
+			// ends on deferred listener.Close()
 			conn, err := listener.Accept()
 			if nil != err {
 				// log the error and leave the accept loop
@@ -120,90 +212,20 @@ func (s *Service) Serve(listener net.Listener, tuntx chan<- []byte, tunrx <-chan
 			// Send the connection for handling
 			connhandler <- conn
 		}
-	}(connchan)
+	}(listener, connchan)
 
-	// The outbound packet router
-	// Happy path packets inbound from the tun adapter on the tunrx channel, are parsed for their destination IP,
-	// then written to the client matching that address found in the routing table
-	go func(rxchan <-chan []byte, statechan <-chan ClientState) {
-		// routing table state used only in this goroutine
-		// routes are a mapping from client ip to a distinct client's tunrx channel
-		routes := make(map[uint32]chan<- []byte)
-		for {
-			// serializing the state updates and state consumption in the same
-			// goroutine gives lock-free operation.
-			select {
-			// State messages update the routes map state
-			// We must not write to a client's channel after getting a disconnect for it
-			// because its tunrx channel is closed after disconnect
-			case state := <-statechan:
-				ipint := ip2int(state.client.ip.To4())
-				if state.transition == Connect {
-					log.Printf("serverrx: got client connect %s", state.client.name)
-					// Add an item to the routing table
-					routes[ipint] = state.client.tunrx
-				} else {
-					log.Printf("serverrx: got client disconnect %s", state.client.name)
-					// Remove and item from the routing table
-					delete(routes, ipint)
-				}
-				continue // Jump to top of loop for more possible state change messages
-			default: // This default causes this case to immediately be skipped if statechan is empty
-			}
+	// Route packets bound for clients as they come in the tunrx channel
+	// Uses clientstate channel to keep internal routing table up to date
+	// Exits when tunrx channel is closed
+	go routePackets(tunrx, clientstate)
 
-			// Data routing consumes the routes map state when there are no client state messages waiting
-			// This repetition allows us to sleep the goroutine while there are no messages to process
-			// while being instantly responsive to new messages of either type
-			select {
-			case state := <-statechan:
-				ipint := ip2int(state.client.ip.To4())
-				if state.transition == Connect {
-					log.Printf("serverrx: got client connect %s", state.client.name)
-					// Add an item to the routing table
-					routes[ipint] = state.client.tunrx
-				} else {
-					log.Printf("serverrx: got client disconnect %s", state.client.name)
-					// Remove and item from the routing table
-					delete(routes, ipint)
-				}
-				continue // Jump to top of loop for more possible state change messages
-
-			// Route packet to appropriate client tunrx channel
-			case buf, ok := <-rxchan:
-				if !ok {
-					// If the receive channel is closed, exit the loop
-					return
-				}
-
-				// Get destination IP from packet
-				header, err := ipv4.ParseHeader(buf)
-				if err != nil {
-					// If we couldn't parse IP headers, drop the packet
-					log.Printf("serverrx(dropped): could not parse packet header: %s", err)
-					continue
-				}
-
-				clientip := header.Dst
-
-				log.Printf("serverrx: got %d byte tun packet for %s", len(buf), clientip)
-
-				// Lookup client in routing state
-				if clientrx, ok := routes[ip2int(clientip.To4())]; ok {
-					// Send packet to client tunrx channel
-					clientrx <- buf
-				} else {
-					//TODO: Send ICMP unreachable if no client found
-				}
-			}
-		}
-	}(tunrx, clientstate)
-
-	// Implement a channel that delivers unused IP addresses
+	// Implements a channel that delivers unused IP addresses when read
 	// And returns IPs to the pool when a client disconnects
 	// Set the buffer size to the host count - 3 (network address, server address, and broadcast address)
 	netmasklen, networksize := servernet.Mask.Size()
 	hostmask := uint32(2 ^ (networksize - netmasklen)) // Calculate host count
 	netblock := make(chan net.IP, hostmask-3)
+	// No exit state needed
 	go func(blockchan chan<- net.IP, statechan <-chan ClientState, hostcount uint32, netip uint32) {
 		log.Printf("server: netblock: adding %d host addresses", hostmask-3)
 
@@ -220,14 +242,13 @@ func (s *Service) Serve(listener net.Listener, tuntx chan<- []byte, tunrx <-chan
 				blockchan <- state.client.ip
 			}
 		}
-	}(netblock, clientstate, hostmask, ip2int(servernet.IP.To4()))
+	}(netblock, clientstate, hostmask, ip2int(servernet.IP))
 
 	// Forever select on the done channel, and the client connection handler channel
 	for {
 		select {
 		case <-s.done:
 			log.Println("server: got done signal", listener.Addr())
-			// TODO: close tun adapter?
 			return
 
 		case conn := <-connchan:
@@ -294,6 +315,7 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 	clientrx := make(chan []byte)
 
 	// Producer that pumps the read-side of the client connection into the clientrx channel
+	// Exits on failing read after deferred conn.Close()
 	go func(conn net.Conn, rxchan chan<- []byte, wait *sync.WaitGroup) {
 		// Leave the wait group when the read pump exits
 		defer wait.Done()
@@ -317,6 +339,7 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 	}(tlscon, clientrx, s.shutdownGroup)
 
 	// Pipe that pumps packets from the client tunrx channel into the client connection
+	// Exits on failing write after deferred conn.Close() or after deferred close(client.tunrx)
 	go func(txchan <-chan []byte, conn net.Conn) {
 		// Pump the transmit channel until it is closed
 		for buf := range txchan {
@@ -354,7 +377,7 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 		n := 3
 		client.tunrx <- settingsbuf[n:]
 
-	case <-time.After(2 * time.Minute):
+	case <-time.After(2 * time.Minute): // TODO: Define in config
 		log.Print("server: conn(term): timed out waiting for client info")
 		return
 	}
@@ -366,12 +389,10 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 			transition: Disconnect,
 			client:     client,
 		}
-		// Close the client tunrx channel so the read loop exits
-		close(client.tunrx)
 	}()
 
 	// Send client connect state change
-	// This causes the clientrx channel to be mounted by the tun router and it will now receieve traffic
+	// This causes the client.tunrx channel to be mounted by the tun router and it will now receieve traffic
 	clientstate <- ClientState{
 		transition: Connect,
 		client:     client,
@@ -469,7 +490,12 @@ func main() {
 	}()
 
 	// Producer that reads packets off of the tun interface and pushes them on the tunrx channel
+	// TODO: Read ends when tun interface is closed/stopped?
 	go func(tun *water.Interface, rxchan chan<- []byte) {
+		// Close channel when read loop ends to signal end of traffic
+		// Used by client data router to know when to stop reading
+		defer close(rxchan)
+
 		tunbuf := make([]byte, MTU)
 		for {
 			n, err := tun.Read(tunbuf)
@@ -484,6 +510,7 @@ func main() {
 	}(iface, tunrx)
 
 	// Consumer that reads packets off of the tuntx channel and writes them to the tun interface
+	// TODO: Write ends when tun interface is closed/stopped?
 	go func(txchan <-chan []byte, tun *water.Interface) {
 		// Read the channel until it is closed
 		for tunbuf := range txchan {
