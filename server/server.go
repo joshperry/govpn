@@ -25,11 +25,11 @@ const (
 
 // The VPN server service
 type Service struct {
-	done          chan bool
-	shutdownGroup *sync.WaitGroup
+	done          chan bool       // A channel to signal shutdown of the service
+	shutdownGroup *sync.WaitGroup // A waitgroup to syncronize graceful shutdown
 }
 
-// Make a new Service.
+// Make a new Service
 func NewService() *Service {
 	s := &Service{
 		done:          make(chan bool),
@@ -37,45 +37,6 @@ func NewService() *Service {
 	}
 	s.shutdownGroup.Add(1)
 	return s
-}
-
-// Defines the state for an authenticated client connection
-type Client struct {
-	ip       net.IP // client tunnel ip
-	publicip net.IP // client public ip
-	name     string // name of the authenticated client
-	tunrx    chan []byte
-}
-
-// Creates a new client given a tls connection
-// Validates and parses the client certificate values
-// Tracks ~static state of a vpn client connection for data routing and address reaping
-func NewClient(tlscon *tls.Conn) (*Client, error) {
-	ipstring := tlscon.RemoteAddr().String()
-
-	// Grab connection state from the completed connection
-	state := tlscon.ConnectionState()
-	log.Print(state)
-
-	// If client cert not provided, send back HTTP 403 response
-	// TODO: Also send same error if curve preference is not met?
-	if len(state.PeerCertificates) == 0 {
-		return nil, errors.New("no peer cert provided")
-	}
-
-	log.Println("Server: client public key is:")
-	for _, v := range state.PeerCertificates {
-		log.Print(x509.MarshalPKIXPublicKey(v.PublicKey))
-	}
-
-	// TODO: Verify certificate parameters as vpn client and extract client name
-	name := "10702AG"
-
-	return &Client{
-		name:     name,
-		publicip: net.ParseIP(ipstring[0:strings.Index(ipstring, ":")]),
-		tunrx:    make(chan []byte),
-	}, nil
 }
 
 // An "enum" of the transition state
@@ -88,94 +49,55 @@ const (
 	Disconnect
 )
 
-// Couples a transition state with the target client for
-// client state channel delivery
+// Couples a transition state with the target client for delivery on the client state channel
+// Any time a client changes state (connects or disconnects), a ClientState object representing the event is sent into the client state channel
+// The connect message is sent in the client connection handler
+// The disconnect message is sent from a deferral when the client connection handler exits
 type ClientState struct {
 	transition Transition
 	client     *Client
 }
 
-//====
-// The outbound packet router
+// Defines the state for an authenticated client connection
+// Birthed in the client connection handler `func (s *Service) serve(/**/)` and used in messages sent for data route updates and ip address reaping
+type Client struct {
+	ip       net.IP // client tunnel ip
+	publicip net.IP // client public ip
+	name     string // name of the authenticated client
+	// A goroutine in the client connection handler reads packets from this channel and then writes them out the client tls socket
+	// A goroutine in the router reads packets from the tun interface and writes any destined for this client ip, to this channel
+	tunrx chan []byte
+}
 
-// Happy path packets inbound from the tun adapter on the rxchan channel, are parsed for their destination IP,
-// then written to the client matching that address found in the routing table
-// Internal routing table is kept in sync by reading events from the statechan channel
-func routePackets(rxchan <-chan []byte, statechan <-chan ClientState) {
-	// routing table state used only in this goroutine
-	// routes are a mapping from client ip to a distinct client's tunrx channel
-	routes := make(map[uint32]chan<- []byte)
-	for {
-		// serializing the state updates and state consumption in the same
-		// goroutine gives lock-free operation.
-		select {
-		// State messages update the routes map state
-		// We must not write to a client's channel after getting a disconnect for it
-		// because its tunrx channel is closed after disconnect
-		case state := <-statechan:
-			ipint := ip2int(state.client.ip)
-			if state.transition == Connect {
-				log.Printf("serverrx: got client connect %s", state.client.name)
-				// Add an item to the routing table
-				routes[ipint] = state.client.tunrx
-			} else {
-				log.Printf("serverrx: got client disconnect %s", state.client.name)
-				// Close the rx channel and remove the item from the routing table
-				close(routes[ipint])
-				delete(routes, ipint)
-			}
-			continue // Jump to top of loop for more possible state change messages
-		default: // This default causes this case to immediately be skipped if statechan is empty
-		}
+// Creates a new Client given a tls connection
+// Parses and validates the client certificate values
+// Always returns (nil,error) when some step in validating the connection failed
+func NewClient(tlscon *tls.Conn) (*Client, error) {
+	// Grab connection state from the completed connection
+	state := tlscon.ConnectionState()
+	log.Print(state)
 
-		// Data routing consumes the routes map state when there are no client state messages waiting
-		// This repetition allows us to sleep the goroutine while there are no messages to process
-		// while being instantly responsive to new messages of either type
-		// TODO: Refactor DRY
-		select {
-		case state := <-statechan:
-			ipint := ip2int(state.client.ip)
-			if state.transition == Connect {
-				log.Printf("serverrx: got client connect %s", state.client.name)
-				// Add an item to the routing table
-				routes[ipint] = state.client.tunrx
-			} else {
-				log.Printf("serverrx: got client disconnect %s", state.client.name)
-				// Close the rx channel and remove the item from the routing table
-				close(routes[ipint])
-				delete(routes, ipint)
-			}
-			continue // Jump to top of loop for more possible state change messages
-
-		// Route packet to appropriate client tunrx channel
-		// Channel is closed when tun adapter read loop exits (in main)
-		case buf, ok := <-rxchan:
-			if !ok {
-				// If the receive channel is closed, exit the loop
-				return
-			}
-
-			// Get destination IP from packet
-			header, err := ipv4.ParseHeader(buf)
-			if err != nil {
-				// If we couldn't parse IP headers, drop the packet
-				log.Printf("serverrx(dropped): could not parse packet header: %s", err)
-				continue
-			}
-
-			clientip := header.Dst
-
-			log.Printf("serverrx: got %d byte tun packet for %s", len(buf), clientip)
-
-			// Lookup client in routing state
-			if clientrx, ok := routes[ip2int(clientip)]; ok {
-				// Send packet to client tunrx channel
-				clientrx <- buf
-			} else {
-				//TODO: Send ICMP unreachable if no client found
-			}
-		}
+	// If client cert not provided, send back HTTP 403 response
+	// TODO: Also send same error if curve preference is not met?
+	if len(state.PeerCertificates) == 0 {
+		return nil, errors.New("no peer cert provided")
 	}
+
+	log.Println("server: conn: client public key is:")
+	for _, v := range state.PeerCertificates {
+		log.Print(x509.MarshalPKIXPublicKey(v.PublicKey))
+	}
+
+	// TODO: Verify certificate parameters as vpn client and extract client name
+	name := "10702AG"
+
+	// TODO: Do we need to do anything special to get the real remote address behind loadbalancer?
+	ipstring := tlscon.RemoteAddr().String()
+	return &Client{
+		name:     name,
+		publicip: net.ParseIP(ipstring[0:strings.Index(ipstring, ":")]),
+		tunrx:    make(chan []byte),
+	}, nil
 }
 
 // Accept connections and spawn a goroutine to serve() each one.
@@ -339,7 +261,7 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 	}(tlscon, clientrx, s.shutdownGroup)
 
 	// Pipe that pumps packets from the client tunrx channel into the client connection
-	// Exits on failing write after deferred conn.Close() or after deferred close(client.tunrx)
+	// Exits on failing write after deferred conn.Close() or after deferred close(client.tunrx) by router
 	go func(txchan <-chan []byte, conn net.Conn) {
 		// Pump the transmit channel until it is closed
 		for buf := range txchan {
@@ -435,10 +357,90 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 	}
 }
 
+//====
+// The outbound packet router
+// Happy path packets inbound from the tun adapter on the rxchan channel, are parsed for their destination IP,
+// then written to the client matching that address found in the routing table
+// Internal routing table is kept in sync by reading events from the statechan channel
+func routePackets(rxchan <-chan []byte, statechan <-chan ClientState) {
+	// routing table state used only in this goroutine
+	// routes are a mapping from client ip to a distinct client's tunrx channel
+	routes := make(map[uint32]chan<- []byte)
+
+	// Takes a ClientState message and updates the routes state from it
+	updateRoutes := func(state ClientState) {
+		ipint := ip2int(state.client.ip)
+		if state.transition == Connect {
+			log.Printf("serverrx: got client connect %s", state.client.name)
+			// Add an item to the routing table
+			routes[ipint] = state.client.tunrx
+		} else {
+			log.Printf("serverrx: got client disconnect %s", state.client.name)
+			// Close the rx channel and remove the item from the routing table
+			close(routes[ipint])
+			delete(routes, ipint)
+		}
+	}
+
+	for {
+		// serializing the state updates and state consumption in the same
+		// goroutine gives lock-free operation.
+		select {
+		// State messages update the routes map state
+		// We must not write to a client's channel after getting a disconnect for it
+		// because its tunrx channel is closed after disconnect
+		case state := <-statechan:
+			updateRoutes(state)
+			continue // Jump to top of loop for more possible state change messages
+		default: // This default causes this case to immediately be skipped if statechan is empty
+		}
+
+		// Data routing consumes the routes map state when there are no client state messages waiting to modify it
+		// This repetition allows us to sleep the goroutine while there are no messages to process
+		// while being instantly responsive to new messages of either type
+		select {
+		case state := <-statechan:
+			updateRoutes(state)
+			continue // Jump to top of loop for more possible state change messages
+
+		// Route packet to appropriate client tunrx channel
+		// Channel is closed when tun interface read loop exits (in main)
+		case buf, ok := <-rxchan:
+			if !ok { // If the receive channel is closed, exit the loop
+				return
+			}
+
+			// Get destination IP from packet
+			header, err := ipv4.ParseHeader(buf)
+			if err != nil {
+				// If we couldn't parse IP headers, drop the packet
+				log.Printf("serverrx(dropped): could not parse packet header: %s", err)
+				continue
+			}
+
+			clientip := header.Dst
+
+			log.Printf("serverrx: got %d byte tun packet for %s", len(buf), clientip)
+
+			// Lookup client in routing state
+			if clientrx, ok := routes[ip2int(clientip)]; ok {
+				// Send packet to client tunrx channel
+				clientrx <- buf
+			} else {
+				//TODO: Send ICMP unreachable if no client found
+			}
+		}
+	}
+}
+
 func main() {
 	log.SetFlags(log.Lshortfile)
 
+	// Wait for main services to stop
+	mainwait := &sync.WaitGroup{}
+
 	// Load the server's PKI keypair
+	// TODO: Load from config
 	cer, err := tls.LoadX509KeyPair("server.crt", "server.key")
 	if err != nil {
 		log.Fatalf("server: failed to load server PKI material: %s", err)
@@ -446,6 +448,7 @@ func main() {
 
 	// Load client CA cert chain
 	certpool := x509.NewCertPool()
+	// TODO: Load from config
 	pem, err := ioutil.ReadFile("certs/ca.pem")
 	if err != nil {
 		log.Fatalf("server: failed to read client certificate authority: %v", err)
@@ -456,6 +459,7 @@ func main() {
 
 	// Create tls config with PKI material
 	// TODO: Can this handle a client CRL?
+	// TODO: Load from config
 	config := &tls.Config{
 		Certificates:             []tls.Certificate{cer},
 		MinVersion:               tls.VersionTLS12,
@@ -483,18 +487,14 @@ func main() {
 	tunrx := make(chan []byte)
 	tuntx := make(chan []byte)
 
-	// Close the tun tx channel when we exit main
-	defer func() {
-		log.Print("server: tuntx: deferred closing tuntx channel")
-		close(tuntx)
-	}()
-
 	// Producer that reads packets off of the tun interface and pushes them on the tunrx channel
 	// TODO: Read ends when tun interface is closed/stopped?
+	mainwait.Add(1)
 	go func(tun *water.Interface, rxchan chan<- []byte) {
 		// Close channel when read loop ends to signal end of traffic
 		// Used by client data router to know when to stop reading
 		defer close(rxchan)
+		defer mainwait.Done()
 
 		tunbuf := make([]byte, MTU)
 		for {
@@ -510,8 +510,11 @@ func main() {
 	}(iface, tunrx)
 
 	// Consumer that reads packets off of the tuntx channel and writes them to the tun interface
-	// TODO: Write ends when tun interface is closed/stopped?
+	// TODO: Exits on write failure when tun interface is closed/stopped or when txchan is closed?
+	mainwait.Add(1)
 	go func(txchan <-chan []byte, tun *water.Interface) {
+		defer mainwait.Done()
+
 		// Read the channel until it is closed
 		for tunbuf := range txchan {
 			// Write the buffer to the tun interface
@@ -545,4 +548,11 @@ func main() {
 
 	// Stop the service and disconnect clients gracefully
 	service.Stop()
+
+	// Close the tun tx channel
+	log.Print("server: tuntx: closing tuntx channel")
+	close(tuntx)
+
+	// Wait for main pumps to stop
+	mainwait.Wait()
 }
