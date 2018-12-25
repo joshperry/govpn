@@ -113,6 +113,9 @@ func (s *Service) Serve(listener net.Listener, tuntx chan<- []byte, tunrx <-chan
 
 	// Channel to send client connection state changes to
 	clientstate := make(chan ClientState)
+	// No more client states are sent when the server exits
+	// signals the router and netblock to end
+	defer close(clientstate)
 
 	// Goroutine to pump the accept loop into a handler channel
 	// Exits when Accept fails on deferred listener.Close()
@@ -138,7 +141,7 @@ func (s *Service) Serve(listener net.Listener, tuntx chan<- []byte, tunrx <-chan
 
 	// Route packets bound for clients as they come in the tunrx channel
 	// Uses clientstate channel to keep internal routing table up to date
-	// Exits when tunrx channel is closed
+	// Exits when tunrx or clientstate channels are closed
 	go routePackets(tunrx, clientstate)
 
 	// Implements a channel that delivers unused IP addresses when read
@@ -147,8 +150,11 @@ func (s *Service) Serve(listener net.Listener, tuntx chan<- []byte, tunrx <-chan
 	netmasklen, networksize := servernet.Mask.Size()
 	hostmask := uint32(2 ^ (networksize - netmasklen)) // Calculate host count
 	netblock := make(chan net.IP, hostmask-3)
-	// No exit state needed
+	// Exits when the statechan is closed
 	go func(blockchan chan<- net.IP, statechan <-chan ClientState, hostcount uint32, netip uint32) {
+		// Requests to the netblock chan will stop working if the statechan loop exits
+		defer close(netblock)
+
 		log.Printf("server: netblock: adding %d host addresses", hostmask-3)
 
 		// Pump the netblock channel full of available addresses
@@ -158,7 +164,13 @@ func (s *Service) Serve(listener net.Listener, tuntx chan<- []byte, tunrx <-chan
 
 		for {
 			// When a client disconnects, add its IP back to the block
-			state := <-statechan
+			state, ok := <-statechan
+			if !ok { // If statechan closes, stop servicing ip requests
+				log.Print("server: netblock(term): statechan closed")
+				return
+			}
+
+			// When a client disconnects, push its ip back onto the netblock channel
 			if state.transition == Disconnect {
 				log.Printf("server: netblock: recovered ip %s, %d unallocated ips remain", state.client.ip, len(blockchan))
 				blockchan <- state.client.ip
@@ -204,9 +216,13 @@ func (s *Service) Stop() {
 
 // Client handler function for :443
 func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- ClientState, netblock <-chan net.IP) {
+	// Leave the shutdown group when handler exits
+	defer s.shutdownGroup.Done()
+
 	// Close connection when handler exits
 	defer conn.Close()
 
+	// Get a TLS connection from our plain net.Conn
 	tlscon, ok := conn.(*tls.Conn)
 	if !ok {
 		log.Print("server: conn(term): not a TLS connection")
@@ -231,16 +247,16 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 		return
 	}
 
-	// A channel to signal a read or write error to/from the client
-	rwerr := make(chan bool, 2)
 	// A channel for flowing packets read from the client
 	clientrx := make(chan []byte)
 
 	// Producer that pumps the read-side of the client connection into the clientrx channel
-	// Exits on failing read after deferred conn.Close()
+	// Exits on failing read after deferred conn.Close() or zero-length read from client close
+	s.shutdownGroup.Add(1)
 	go func(conn net.Conn, rxchan chan<- []byte, wait *sync.WaitGroup) {
 		// Leave the wait group when the read pump exits
 		defer wait.Done()
+		defer close(rxchan)
 
 		// Forever read
 		buf := make([]byte, MTU)
@@ -251,7 +267,11 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 			if nil != err {
 				// Read failed, pumpexit the handler
 				log.Printf("server: connrx(term): error while reading: %s", err)
-				rwerr <- true
+				return
+			}
+
+			if n == 0 {
+				log.Print("server: connrx(term): remote client closed connection")
 				return
 			}
 
@@ -259,6 +279,9 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 			rxchan <- buf[:n]
 		}
 	}(tlscon, clientrx, s.shutdownGroup)
+
+	// A channel to signal a write error to the client
+	writeerr := make(chan bool, 2)
 
 	// Pipe that pumps packets from the client tunrx channel into the client connection
 	// This needs to continue pumping until the txchan is closed or the router could stall
@@ -281,7 +304,7 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 				if err != nil {
 					log.Printf("server: conntx(term): error while writing: %s", err)
 					// If the write errors, signal the rwerr channel
-					rwerr <- true
+					writeerr <- true
 					failed = true
 				}
 			}
@@ -337,17 +360,18 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 			log.Println("server: conn(term): got done signal", tlscon.RemoteAddr())
 			return
 
-		// Disconnect if we receive a message on the rwerr channel
-		case <-rwerr:
+		// Disconnect if we error writing to client
+		case <-writeerr:
 			return
 
 		// Consumes packets from the clientrx channel then sends them into the tuntx channel
-		case buf := <-clientrx:
-			log.Print("server: conn: received packet from client")
-			if len(buf) == 0 {
-				log.Print("server: conn(term): remote client closed connection")
+		case buf, ok := <-clientrx:
+			if !ok {
+				log.Print("server: conn(term): clientrx chan closed")
 				return
 			}
+
+			log.Print("server: conn: received packet from client")
 
 			// Grab the packet ip header
 			header, _ := ipv4.ParseHeader(buf)
@@ -370,52 +394,45 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 // Happy path packets inbound from the tun adapter on the rxchan channel, are parsed for their destination IP,
 // then written to the client matching that address found in the routing table
 // Internal routing table is kept in sync by reading events from the statechan channel
+// Exits when statechan or rxchan are closed
 func routePackets(rxchan <-chan []byte, statechan <-chan ClientState) {
 	// routing table state used only in this goroutine
 	// routes are a mapping from client ip to a client's distinct tunrx channel
 	routes := make(map[uint32]chan<- []byte)
 
-	// Takes a ClientState message and updates the routes state from it
-	updateRoutes := func(state ClientState) {
-		// uint32 keys are used for the route map
-		ipint := ip2int(state.client.ip)
-		if state.transition == Connect {
-			log.Printf("serverrx: got client connect %s", state.client.name)
-			// Add an item to the routing table
-			routes[ipint] = state.client.tunrx
-		} else {
-			log.Printf("serverrx: got client disconnect %s", state.client.name)
-			// Remove the item from the routing table and then close the rx channel
-			// Once the disconnect message is recieved, the client handler has exited
-			delete(routes, ipint)
-			// We close this channel here to finally release the read side pump in response to the close
-			close(routes[ipint])
-		}
-	}
-
 	for {
 		// serializing the state updates and state consumption in the same
 		// goroutine gives lock-free operation.
-		select {
-		case state := <-statechan:
-			updateRoutes(state)
-			continue // Jump to top of loop for more possible state change messages
-		default: // This default causes this case to immediately be skipped if statechan is empty
-		}
 
 		// State messages update the routes map state
-		// Data routing consumes the routes map state when there are no client state messages waiting to modify it
-		// This repetition allows us to sleep the goroutine while there are no messages to process
-		// while being instantly responsive to new messages of either type
+		// Data routing consumes the routes map state
 		select {
-		case state := <-statechan:
-			updateRoutes(state)
-			continue // Jump to top of loop for more possible state change messages
+		case state, ok := <-statechan:
+			if !ok { // If the state channel is closed, exit the loop
+				log.Print("serverrx(term): statechan closed")
+				return
+			}
+
+			// uint32 keys are used for the route map
+			ipint := ip2int(state.client.ip)
+			if state.transition == Connect {
+				log.Printf("serverrx: got client connect %s", state.client.name)
+				// Add an item to the routing table
+				routes[ipint] = state.client.tunrx
+			} else {
+				log.Printf("serverrx: got client disconnect %s", state.client.name)
+				// Remove the item from the routing table and then close the rx channel
+				// Once the disconnect message is recieved, the client handler has exited
+				delete(routes, ipint)
+				// We close this channel here to finally release the read side pump in response to the close
+				close(routes[ipint])
+			}
 
 		// Route packet to appropriate client tunrx channel
 		// Channel is closed when tun interface read loop exits (in main)
 		case buf, ok := <-rxchan:
 			if !ok { // If the receive channel is closed, exit the loop
+				log.Print("serverrx(term): rxchan closed")
 				return
 			}
 
@@ -444,9 +461,6 @@ func routePackets(rxchan <-chan []byte, statechan <-chan ClientState) {
 
 func main() {
 	log.SetFlags(log.Lshortfile)
-
-	// Wait for main services to stop
-	mainwait := &sync.WaitGroup{}
 
 	// Load the server's PKI keypair
 	// TODO: Load from config
@@ -496,8 +510,12 @@ func main() {
 	tunrx := make(chan []byte)
 	tuntx := make(chan []byte)
 
+	// Waitgroup for waiting on main services to stop
+	mainwait := &sync.WaitGroup{}
+
 	// Producer that reads packets off of the tun interface and pushes them on the tunrx channel
 	// Packets put on the tunrx channel are read by the data router that decides where to send them
+	// If this stops pumping then client handler writes to the tuntx channel will stall
 	// TODO: Read ends when tun interface is closed/stopped?
 	mainwait.Add(1)
 	go func(tun *water.Interface, rxchan chan<- []byte) {
@@ -563,6 +581,9 @@ func main() {
 	// Close the tun tx channel
 	log.Print("server: tuntx: closing tuntx channel")
 	close(tuntx)
+
+	// Close the tun interface
+	iface.Close()
 
 	// Wait for main pumps to stop
 	mainwait.Wait()
