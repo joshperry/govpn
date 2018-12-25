@@ -1,9 +1,11 @@
 package main
 
 import (
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io/ioutil"
 	"log"
@@ -49,11 +51,27 @@ const (
 	Disconnect
 )
 
+// Info that the client sends in its first packet after connection
+// encoded as json
+type ClientInfo struct {
+	time    time.Time
+	version string
+}
+
+// Settings to send json encoded as the first packet to the client after reading
+// its first packet which contains ClientInfo
+type ClientSettings struct {
+	time    time.Time
+	version string
+	ip      string
+}
+
 // Couples a transition state with the target client for delivery on the client state channel
 // Any time a client changes state (connects or disconnects), a ClientState object representing the event is sent into the client state channel
 // The connect message is sent in the client connection handler
 // The disconnect message is sent from a deferral when the client connection handler exits
 type ClientState struct {
+	happened   time.Time
 	transition Transition
 	client     *Client
 }
@@ -61,12 +79,16 @@ type ClientState struct {
 // Defines the state for an authenticated client connection
 // Birthed in the client connection handler `func (s *Service) serve(/**/)` and used in messages sent for data route updates and ip address reaping
 type Client struct {
-	ip       net.IP // client tunnel ip
-	publicip net.IP // client public ip
-	name     string // name of the authenticated client
+	ip           net.IP // client tunnel ip
+	id           int64  // A unique identifier for this client connection
+	connected    time.Time
+	disconnected time.Time
+	publicip     net.IP // client public ip
+	name         string // name of the authenticated client
 	// A goroutine in the client connection handler reads packets from this channel and then writes them out the client tls socket
 	// A goroutine in the router reads packets from the tun interface and writes any destined for this client ip, to this channel
-	tunrx chan []byte
+	tunrx   chan []byte
+	control chan string // A channel to send control messages to the client handler
 }
 
 // Creates a new Client given a tls connection
@@ -93,11 +115,28 @@ func NewClient(tlscon *tls.Conn) (*Client, error) {
 
 	// TODO: Do we need to do anything special to get the real remote address behind loadbalancer?
 	ipstring := tlscon.RemoteAddr().String()
+
+	// Get a random connection id
+	connectionid, err := randint64()
+	if err != nil {
+		return nil, errors.New("server: conn(term): unknown error getting random")
+	}
+
 	return &Client{
-		name:     name,
-		publicip: net.ParseIP(ipstring[0:strings.Index(ipstring, ":")]),
-		tunrx:    make(chan []byte),
+		name:      name,
+		id:        connectionid,
+		connected: time.Now(),
+		publicip:  net.ParseIP(ipstring[0:strings.Index(ipstring, ":")]),
+		tunrx:     make(chan []byte),
 	}, nil
+}
+
+func randint64() (int64, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0, err
+	}
+	return int64(binary.LittleEndian.Uint64(b[:])), nil
 }
 
 // Accept connections and spawn a goroutine to serve() each one.
@@ -162,21 +201,58 @@ func (s *Service) Serve(listener net.Listener, tuntx chan<- []byte, tunrx <-chan
 			blockchan <- int2ip(netip + i)
 		}
 
-		for {
+		for state := range statechan {
 			// When a client disconnects, add its IP back to the block
-			state, ok := <-statechan
-			if !ok { // If statechan closes, stop servicing ip requests
-				log.Print("server: netblock(term): statechan closed")
-				return
-			}
-
-			// When a client disconnects, push its ip back onto the netblock channel
 			if state.transition == Disconnect {
 				log.Printf("server: netblock: recovered ip %s, %d unallocated ips remain", state.client.ip, len(blockchan))
 				blockchan <- state.client.ip
 			}
 		}
+		log.Print("server: netblock(term): statechan closed")
 	}(netblock, clientstate, hostmask, ip2int(servernet.IP))
+
+	// Track client connection lifetimes for reporting and enforcement
+	// Exits when clientstate channel is closed
+	go func(statechan <-chan ClientState) {
+		contrack := make(map[string]*Client) // Like open
+		deltrack := make(map[int64]*Client)  // Like close_wait
+		// TODO: Handle metrics/reporting
+
+		// Pump the statechan for changes in client state and update our contrack tables
+		for state := range statechan {
+			if state.transition == Connect {
+				// See if we have any existing client connections with this name
+				other, ok := contrack[state.client.name]
+				if ok {
+					// Enforce single connection per client by disconnecting any existing connections for the client name
+					other.control <- "disconnect"
+					// Save the disconnecting client into the deltrack list to await its final goodbye
+					deltrack[state.client.id] = contrack[state.client.name]
+				}
+
+				contrack[state.client.name] = state.client
+
+			} else if state.transition == Disconnect {
+				// When a client disconnects reap the client lists
+				if _, ok := deltrack[state.client.id]; ok {
+					// If we are already waiting for disconnection
+					// just remove it from the deltrack list
+					delete(deltrack, state.client.id)
+				} else {
+					// If there is an existing contrack entry
+					if client, ok := contrack[state.client.name]; ok {
+						// With the same connection id
+						if client.id == state.client.id {
+							// Remove the client from the connection tracking list
+							delete(contrack, state.client.name)
+						} else {
+							log.Print("server: state: space oddity, no matching client for disconnect")
+						}
+					}
+				}
+			}
+		}
+	}(clientstate)
 
 	// Forever select on the done channel, and the client connection handler channel
 	for {
@@ -280,6 +356,50 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 		}
 	}(tlscon, clientrx, s.shutdownGroup)
 
+	// Application-Layer Handshake
+	// Read first packet from client with a timeout
+	select {
+	case infobuf := <-clientrx:
+		log.Print(infobuf)
+		// Decode client info struct from json in the first packet, delimited with newline
+		var info ClientInfo
+		if err := json.Unmarshal(infobuf, &info); err != nil {
+			log.Print("server: conn(term): error decoding client info packet")
+			return
+		}
+
+		// TODO: Validate client info
+
+		// Allocate client IP address
+		client.ip = <-netblock
+
+		// Create client settings to send
+		settings := ClientSettings{
+			time:    time.Now(),
+			version: "0.1.0",
+			ip:      client.ip.String(),
+		}
+
+		// Encode client settings struct to newline delimited json and send as first packet
+		settingsbuf, err := json.Marshal(settings)
+		if err != nil {
+			log.Print("server: conn(term): error encoding client settings packet")
+			return
+		}
+
+		// Write the settings buffer out to the client
+		n, err := conn.Write(settingsbuf)
+		log.Printf("server: conn: sent client settings bytes: %d", n)
+		if err != nil {
+			log.Printf("server: conn(term): error sending client settings: %s", err)
+			return
+		}
+
+	case <-time.After(2 * time.Minute): // TODO: Define in config
+		log.Print("server: conn(term): timed out waiting for client info")
+		return
+	}
+
 	// A channel to signal a write error to the client
 	writeerr := make(chan bool, 2)
 
@@ -311,34 +431,14 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 		}
 	}(client.tunrx, tlscon, s.shutdownGroup)
 
-	// Application-Layer Handshake
-	// Read first packet from client with a timeout
-	select {
-	case infobuf := <-clientrx:
-		log.Print(infobuf)
-		// TODO: Decode client info struct from json in the first packet, delimited with newline
-
-		// Now that we have client info, send client settings json
-
-		// Allocate client IP address
-		client.ip = <-netblock
-
-		// TODO: Create client settings to send
-
-		settingsbuf := make([]byte, MTU)
-		// TODO: Encode client settings struct to newline delimited json and send as first packet
-		n := 3
-		client.tunrx <- settingsbuf[n:]
-
-	case <-time.After(2 * time.Minute): // TODO: Define in config
-		log.Print("server: conn(term): timed out waiting for client info")
-		return
-	}
-
 	// Defer client cleanup to when leaving the handler
 	defer func() {
-		// Disconnect client state change
+		// Record disconnect time in client
+		client.disconnected = time.Now()
+
+		// Send disconnect client state change
 		clientstate <- ClientState{
+			happened:   time.Now(),
 			transition: Disconnect,
 			client:     client,
 		}
@@ -347,6 +447,7 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 	// Send client connect state change
 	// This causes the client.tunrx channel to be mounted by the tun router and it will now receieve traffic
 	clientstate <- ClientState{
+		happened:   time.Now(),
 		transition: Connect,
 		client:     client,
 	}
@@ -362,6 +463,7 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 
 		// Disconnect if we error writing to client
 		case <-writeerr:
+			log.Print("server: conn(term): encountered client write error")
 			return
 
 		// Consumes packets from the clientrx channel then sends them into the tuntx channel
@@ -385,6 +487,14 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 
 			// Push the received packet to the tun tx channel
 			tuntx <- buf
+
+		// Handle client control messages
+		case msg := <-client.control:
+			// Leave the loop if we are to disconnect
+			if msg == "disconnect" {
+				log.Print("server: conn(term): received disconnect control")
+				return
+			}
 		}
 	}
 }
