@@ -74,10 +74,12 @@ func NewClient(tlscon *tls.Conn) (*Client, error) {
 		return nil, errors.New("no peer cert provided")
 	}
 
-	log.Println("server: conn: client public key is:")
-	for _, v := range state.PeerCertificates {
-		log.Print(x509.MarshalPKIXPublicKey(v.PublicKey))
-	}
+	/*
+		log.Println("server: conn: client public key is:")
+		for _, v := range state.PeerCertificates {
+			log.Print(x509.MarshalPKIXPublicKey(v.PublicKey))
+		}
+	*/
 
 	// TODO: Verify certificate parameters as vpn client and extract client name
 	name := "10702AG"

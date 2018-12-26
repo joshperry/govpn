@@ -68,7 +68,7 @@ func tunrx(tun *water.Interface, rxchan chan<- []byte, wait *sync.WaitGroup) {
 	// Close channel when read loop ends to signal end of traffic
 	// Used by client data router to know when to stop reading
 	defer close(rxchan)
-	defer wait.Done()
+	//defer wait.Done() // skipped for now since tun.Close() does not kill the sleepinig read, see tunrx callsite for more
 
 	log.Print("server: tunrx: starting")
 

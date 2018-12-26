@@ -1,0 +1,95 @@
+Certificate:
+    Data:
+        Version: 3 (0x2)
+        Serial Number:
+            fc:f0:72:43:c9:f8:28:6e:5c:98:b2:76:c5:58:2a:e1
+    Signature Algorithm: sha256WithRSAEncryption
+        Issuer: C=US, O=test1, CN=Sub CA
+        Validity
+            Not Before: Dec 25 22:23:23 2018 GMT
+            Not After : Dec 25 22:23:23 2019 GMT
+        Subject: C=US, O=test1, CN=Sub CA
+        Subject Public Key Info:
+            Public Key Algorithm: rsaEncryption
+                Public-Key: (2048 bit)
+                Modulus:
+                    00:ef:18:dc:b2:37:cb:fc:96:c8:f3:6d:64:7d:3a:
+                    5d:86:37:cb:41:c5:36:41:48:01:66:11:cf:6b:fa:
+                    b2:74:fc:b7:25:09:b2:b9:36:14:c6:c9:88:d9:18:
+                    0b:bf:93:9e:aa:5d:23:7f:25:9d:50:86:65:e2:02:
+                    41:37:7b:df:43:a5:64:15:1e:84:76:be:ea:1b:da:
+                    8c:2a:9d:5e:ce:7b:f2:1f:cf:84:23:c8:76:01:c2:
+                    c3:17:88:4f:05:3e:90:aa:b5:c7:9b:3f:4a:6a:37:
+                    70:33:a3:03:b7:a7:dd:0a:b3:e9:0f:67:64:e2:04:
+                    72:f6:36:7c:5b:28:92:05:70:95:bb:04:18:31:db:
+                    75:84:ac:c0:26:a8:dc:63:34:c4:32:98:ba:e2:71:
+                    c2:31:ce:92:9d:5f:c9:61:d9:80:95:ab:d0:41:eb:
+                    29:4b:f5:73:98:64:e6:db:fc:bd:1e:dc:f7:5d:cc:
+                    f9:d4:4f:97:2d:32:54:19:0a:09:11:81:c1:13:b9:
+                    27:d4:dc:72:d0:e4:d3:37:7e:58:ca:24:a7:0d:29:
+                    8b:a5:77:ee:19:4d:3b:05:3a:cf:14:cc:e8:f4:7c:
+                    f5:7b:5e:70:2e:63:1c:a9:0b:bc:4f:b3:7f:9f:b9:
+                    ec:be:36:80:32:1d:fc:11:4b:26:e1:92:ad:a3:a1:
+                    66:e9
+                Exponent: 65537 (0x10001)
+        X509v3 extensions:
+            Authority Information Access: 
+                CA Issuers - URI:http://sub-ca.testpdk.io/sub-ca.crt
+                OCSP - URI:http://ocsp.sub-ca.testpdk.io:9081
+
+            X509v3 Authority Key Identifier: 
+                keyid:05:7C:A7:98:3C:2E:8D:EC:2F:1B:73:0F:04:95:27:6C:6C:57:D4:07
+
+            X509v3 Basic Constraints: critical
+                CA:FALSE
+            X509v3 CRL Distribution Points: 
+
+                Full Name:
+                  URI:http://sub-ca.testpdk.io/sub-ca.crl
+
+            X509v3 Extended Key Usage: 
+                TLS Web Client Authentication, TLS Web Server Authentication
+            X509v3 Key Usage: critical
+                Digital Signature, Key Encipherment
+            X509v3 Subject Key Identifier: 
+                94:CC:18:DE:9B:84:CA:E2:FD:94:80:82:D3:17:7C:15:7E:7D:91:4D
+    Signature Algorithm: sha256WithRSAEncryption
+         56:dc:2c:a7:08:25:99:00:12:9b:5d:64:de:06:0b:dc:0a:de:
+         06:c7:c8:88:86:d1:f7:17:a2:d2:b3:d5:6b:f2:0a:ae:94:84:
+         7f:91:96:8f:8c:b8:37:75:17:ac:1b:70:3f:00:37:30:15:ee:
+         f4:7c:68:db:b3:31:14:51:57:8b:0c:88:b6:8f:7f:7b:77:09:
+         2b:71:1f:86:e0:cc:cd:2d:ab:da:6a:3a:da:0b:63:02:c0:00:
+         4c:61:74:5b:59:d7:6a:f7:f1:e6:b4:08:c3:3b:2b:1e:04:a2:
+         41:be:74:7e:0f:70:ec:e4:ec:87:05:20:f0:b7:82:e3:0b:9b:
+         12:6d:31:1a:2f:fd:64:42:64:db:3e:54:d0:06:bc:5d:c4:ff:
+         0f:82:3b:aa:6a:ad:65:ae:a5:4b:01:21:1a:7c:75:64:0d:3c:
+         03:10:25:1e:90:bc:53:6e:05:2b:6f:22:dd:a3:b9:d4:f1:81:
+         76:85:5e:59:bd:5b:99:41:db:c0:38:e0:dd:03:cf:6b:12:12:
+         13:eb:99:03:8b:35:6c:b7:9e:c2:02:4c:78:45:34:03:57:e3:
+         46:45:d3:a0:d3:24:7b:ad:91:16:cf:2d:d8:aa:51:0c:ce:68:
+         38:8e:09:e8:c4:6a:63:ce:be:fd:55:41:04:f3:a3:66:2d:6d:
+         00:1c:17:a8
+-----BEGIN CERTIFICATE-----
+MIIEETCCAvmgAwIBAgIRAPzwckPJ+ChuXJiydsVYKuEwDQYJKoZIhvcNAQELBQAw
+LjELMAkGA1UEBhMCVVMxDjAMBgNVBAoMBXRlc3QxMQ8wDQYDVQQDDAZTdWIgQ0Ew
+HhcNMTgxMjI1MjIyMzIzWhcNMTkxMjI1MjIyMzIzWjAuMQswCQYDVQQGEwJVUzEO
+MAwGA1UECgwFdGVzdDExDzANBgNVBAMMBlN1YiBDQTCCASIwDQYJKoZIhvcNAQEB
+BQADggEPADCCAQoCggEBAO8Y3LI3y/yWyPNtZH06XYY3y0HFNkFIAWYRz2v6snT8
+tyUJsrk2FMbJiNkYC7+TnqpdI38lnVCGZeICQTd730OlZBUehHa+6hvajCqdXs57
+8h/PhCPIdgHCwxeITwU+kKq1x5s/Smo3cDOjA7en3Qqz6Q9nZOIEcvY2fFsokgVw
+lbsEGDHbdYSswCao3GM0xDKYuuJxwjHOkp1fyWHZgJWr0EHrKUv1c5hk5tv8vR7c
+913M+dRPly0yVBkKCRGBwRO5J9TcctDk0zd+WMokpw0pi6V37hlNOwU6zxTM6PR8
+9XtecC5jHKkLvE+zf5+57L42gDId/BFLJuGSraOhZukCAwEAAaOCASgwggEkMG8G
+CCsGAQUFBwEBBGMwYTAvBggrBgEFBQcwAoYjaHR0cDovL3N1Yi1jYS50ZXN0cGRr
+LmlvL3N1Yi1jYS5jcnQwLgYIKwYBBQUHMAGGImh0dHA6Ly9vY3NwLnN1Yi1jYS50
+ZXN0cGRrLmlvOjkwODEwHwYDVR0jBBgwFoAUBXynmDwujewvG3MPBJUnbGxX1Acw
+DAYDVR0TAQH/BAIwADA0BgNVHR8ELTArMCmgJ6AlhiNodHRwOi8vc3ViLWNhLnRl
+c3RwZGsuaW8vc3ViLWNhLmNybDAdBgNVHSUEFjAUBggrBgEFBQcDAgYIKwYBBQUH
+AwEwDgYDVR0PAQH/BAQDAgWgMB0GA1UdDgQWBBSUzBjem4TK4v2UgILTF3wVfn2R
+TTANBgkqhkiG9w0BAQsFAAOCAQEAVtwspwglmQASm11k3gYL3AreBsfIiIbR9xei
+0rPVa/IKrpSEf5GWj4y4N3UXrBtwPwA3MBXu9Hxo27MxFFFXiwyIto9/e3cJK3Ef
+huDMzS2r2mo62gtjAsAATGF0W1nXavfx5rQIwzsrHgSiQb50fg9w7OTshwUg8LeC
+4wubEm0xGi/9ZEJk2z5U0Aa8XcT/D4I7qmqtZa6lSwEhGnx1ZA08AxAlHpC8U24F
+K28i3aO51PGBdoVeWb1bmUHbwDjg3QPPaxISE+uZA4s1bLeewgJMeEU0A1fjRkXT
+oNMke62RFs8t2KpRDM5oOI4J6MRqY86+/VVBBPOjZi1tABwXqA==
+-----END CERTIFICATE-----
