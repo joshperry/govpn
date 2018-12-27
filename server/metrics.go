@@ -11,21 +11,21 @@ import (
 
 var (
 	// Service
-	accepted = prometheus.NewCounter(prometheus.CounterOpts{
+	acceptedmetric = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "vpn_client_accept",
 		Help: "Number of clients accepted",
 	})
 
 	// Client handler
-	connectcount = prometheus.NewCounter(prometheus.CounterOpts{
+	client_connectmetric = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "vpn_client_connect",
 		Help: "Number of times a client has connected",
 	})
-	disconnectcount = prometheus.NewCounter(prometheus.CounterOpts{
+	client_disconnectmetric = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "vpn_client_disconnect",
 		Help: "Number of times a client has disconnected",
 	})
-	failcount = prometheus.NewCounterVec(
+	client_failmetric = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "vpn_client_fail",
 			Help: "Number of times a client fails the TLS handshake.",
@@ -34,20 +34,20 @@ var (
 	)
 
 	// Contrack
-	clientcount = prometheus.NewGaugeVec(
+	contrack_trackedmetric = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "vpn_clients_tracked",
 			Help: "Number of currently connected clients.",
 		},
 		[]string{"table"},
 	)
-	enforcecount = prometheus.NewCounter(prometheus.CounterOpts{
+	contrack_enforcedmetric = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "vpn_client_enforced",
 		Help: "Number of times a client's other connection was terminated for too many connections.",
 	})
 
 	//Netblock
-	ipusecount = prometheus.NewGaugeVec(
+	netblock_usemetric = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "vpn_ip_usage",
 			Help: "Client IP utilisation, free and allocated counts.",
@@ -59,19 +59,19 @@ var (
 func metrics(reportchan chan<- chan<- Connections) {
 	// Register metrics
 	// Service
-	prometheus.MustRegister(accepted)
+	prometheus.MustRegister(acceptedmetric)
 
 	// Client handler
-	prometheus.MustRegister(connectcount)
-	prometheus.MustRegister(disconnectcount)
-	prometheus.MustRegister(failcount)
+	prometheus.MustRegister(client_connectmetric)
+	prometheus.MustRegister(client_disconnectmetric)
+	prometheus.MustRegister(client_failmetric)
 
 	// Conntrack
-	prometheus.MustRegister(clientcount)
-	prometheus.MustRegister(enforcecount)
+	prometheus.MustRegister(contrack_trackedmetric)
+	prometheus.MustRegister(contrack_enforcedmetric)
 
 	// Netblock
-	prometheus.MustRegister(ipusecount)
+	prometheus.MustRegister(netblock_usemetric)
 
 	msrv := http.NewServeMux()
 	// Expose the registered metrics via HTTP.

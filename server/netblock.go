@@ -12,8 +12,8 @@ func runblock(blockchan chan<- net.IP, subchan chan<- ClientStateSub, hostcount 
 	defer close(netblock)
 
 	// Metrics to track
-	alloccount := ipusecount.WithLabelValues("allocated")
-	freecount := ipusecount.WithLabelValues("free")
+	alloccount := netblock_usemetric.WithLabelValues("allocated")
+	freecount := netblock_usemetric.WithLabelValues("free")
 
 	// Channel to receive client state
 	statechan := make(chan ClientState)

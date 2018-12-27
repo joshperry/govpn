@@ -38,8 +38,8 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 	defer conn.Close()
 
 	// Metrics to track
-	tlsfail := failcount.WithLabelValues("tls")
-	nocertfail := failcount.WithLabelValues("nocert")
+	tlsfail := client_failmetric.WithLabelValues("tls")
+	nocertfail := client_failmetric.WithLabelValues("nocert")
 
 	// Get a random connection id
 	id, err := randUint64()
@@ -173,8 +173,8 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 	}
 
 	// Increment connect count metric here
-	connectcount.Inc()
-	defer disconnectcount.Inc()
+	client_connectmetric.Inc()
+	defer client_disconnectmetric.Inc()
 
 	// Enter channel-land! Ye blessed routine
 

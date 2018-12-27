@@ -6,8 +6,8 @@ import (
 
 func contrack(subchan chan<- ClientStateSub, reportchan <-chan chan<- Connections) {
 	// Metrics to track
-	delcount := clientcount.WithLabelValues("delwait")
-	opencount := clientcount.WithLabelValues("open")
+	delcount := contrack_trackedmetric.WithLabelValues("delwait")
+	opencount := contrack_trackedmetric.WithLabelValues("open")
 
 	log.Print("server: contrack: starting")
 
@@ -35,7 +35,7 @@ func contrack(subchan chan<- ClientStateSub, reportchan <-chan chan<- Connection
 				// See if we have any existing client connections with this name
 				other, ok := contrack[state.client.name]
 				if ok {
-					enforcecount.Inc()
+					contrack_enforcedmetric.Inc()
 					/* this does not work under concurrency yet, other client can be disconnected before we send this even with disconnected check
 					// Enforce single connection per client by disconnecting any existing connections for the client name
 					if (other.disconnected == time.Time{}) {

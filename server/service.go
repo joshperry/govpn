@@ -129,7 +129,7 @@ func (s *Service) Serve(listener net.Listener, tuntx chan<- []byte, tunrx <-chan
 			// Add a client to the waitgroup, and handle it in a goroutine
 			s.clientGroup.Add(1)
 			go s.serve(conn, tuntx, clientstate, netblock)
-			accepted.Inc()
+			acceptedmetric.Inc()
 		}
 	}
 }
