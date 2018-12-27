@@ -48,12 +48,12 @@ func runblock(blockchan chan<- net.IP, subchan chan<- ClientStateSub, hostcount 
 		if state.transition == Disconnect {
 			select {
 			case netblock <- state.client.ip:
-				log.Printf("server: netblock: recovered ip %s, %d unallocated ips remain", state.client.ip, len(blockchan))
+				log.Printf("server: netblock: recovered ip %s, %d unallocated ips remain", state.client.ip, len(netblock))
 				freecount.Inc()
 				alloccount.Dec()
 
 			case <-time.After(1 * time.Second):
-				log.Printf("server: netblock(perm): timed out writing %s, %d unallocated ips remain", state.client.ip, len(blockchan))
+				log.Printf("server: netblock(perm): timed out writing %s, %d unallocated ips remain", state.client.ip, len(netblock))
 				panic("timed out writing to netblock")
 			}
 		}
