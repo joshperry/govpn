@@ -75,7 +75,7 @@ func (s *Service) Serve(listener net.Listener, tuntx chan<- []byte, tunrx <-chan
 	// And returns IPs to the pool when a client disconnects
 	// Set the buffer size to the host count - 3 (network address, server address, and broadcast address)
 	// Exits when netblockstate is closed
-	netblock := make(chan net.IP, hostcount-2)
+	netblock := make(chan net.IP)
 	go runblock(netblock, statesub, hostcount, ip2int(servernet.IP))
 
 	// Track client connection lifetimes for reporting and enforcement
@@ -97,6 +97,9 @@ func (s *Service) Serve(listener net.Listener, tuntx chan<- []byte, tunrx <-chan
 	connchan := make(chan net.Conn)
 	s.shutdownGroup.Add(1)
 	go acceptor(listener, connchan, s.shutdownGroup)
+
+	// Start metrics http server
+	go metrics()
 
 	// Forever select on the done channel, and the client connection handler channel
 	for {
@@ -123,6 +126,7 @@ func (s *Service) Serve(listener net.Listener, tuntx chan<- []byte, tunrx <-chan
 			// Add a client to the waitgroup, and handle it in a goroutine
 			s.clientGroup.Add(1)
 			go s.serve(conn, tuntx, clientstate, netblock)
+			accepted.Inc()
 		}
 	}
 }

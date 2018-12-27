@@ -37,6 +37,10 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 	// Close connection when handler exits
 	defer conn.Close()
 
+	// Metrics to track
+	tlsfail := failcount.WithLabelValues("tls")
+	nocertfail := failcount.WithLabelValues("nocert")
+
 	// Get a random connection id
 	id, err := randUint64()
 	if err != nil {
@@ -65,6 +69,7 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 	// Progress to the tls handshake
 	if err := tlscon.Handshake(); err != nil {
 		cprintf("(term): TLS handshake failed: %s", err)
+		tlsfail.Inc()
 		return
 	} else {
 		cprint("TLS handshake completed")
@@ -73,6 +78,7 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 	// Validate this connection as a valid new client
 	client, err := NewClient(tlscon)
 	if err != nil {
+		nocertfail.Inc()
 		cprintf("(term): error validating client: %s", err)
 		//TODO: Send HTTP 403 response
 		//tlscon.Write()
@@ -165,6 +171,9 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 			return
 		}
 	}
+
+	// Increment connect count metric here
+	connectcount.Inc()
 
 	// Enter channel-land! Ye blessed routine
 

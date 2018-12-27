@@ -5,6 +5,9 @@ import (
 )
 
 func contrack(subchan chan<- ClientStateSub) {
+	// Metrics to track
+	delcount := clientcount.WithLabelValues("delwait")
+	opencount := clientcount.WithLabelValues("open")
 
 	log.Print("server: contrack: starting")
 
@@ -25,6 +28,7 @@ func contrack(subchan chan<- ClientStateSub) {
 			// See if we have any existing client connections with this name
 			other, ok := contrack[state.client.name]
 			if ok {
+				enforcecount.Inc()
 				/* this does not work under concurrency yet, other client can be disconnected before we send this even with disconnected check
 				// Enforce single connection per client by disconnecting any existing connections for the client name
 				if (other.disconnected == time.Time{}) {
@@ -36,6 +40,10 @@ func contrack(subchan chan<- ClientStateSub) {
 				// Save the disconnecting client into the deltrack list to await its final goodbye
 				log.Printf("server: contrack: saving to deltrack %s-%#X", other.name, other.id)
 				deltrack[other.id] = other
+
+				delcount.Inc()
+			} else {
+				opencount.Inc()
 			}
 
 			log.Printf("server: contrack: tracking %s-%#X", state.client.name, state.client.id)
@@ -48,6 +56,8 @@ func contrack(subchan chan<- ClientStateSub) {
 				// If we are already waiting for disconnection
 				// just remove it from the deltrack list
 				delete(deltrack, state.client.id)
+
+				delcount.Dec()
 			} else {
 				// If there is an existing contrack entry
 				if client, ok := contrack[state.client.name]; ok && client.id == state.client.id {
@@ -55,6 +65,7 @@ func contrack(subchan chan<- ClientStateSub) {
 					log.Printf("server: contrack: closed last open for %s-%#X", state.client.name, state.client.id)
 					// Remove the client from the connection tracking list
 					delete(contrack, state.client.name)
+					opencount.Dec()
 				} else {
 					log.Printf("server: contrack(perm): got disconnect with zero tracking matches %s-%#X", state.client.name, state.client.id)
 					panic("zero tracking matches")
