@@ -29,11 +29,11 @@ func NewService() *Service {
 
 // Represents a tracked connection
 type Connection struct {
-	time     time.Time
-	name     string
-	ip       string
-	publicip string
-	pending  bool
+	Time     time.Time `json:"time"`
+	Name     string    `json:"name"`
+	IP       string    `json:"ip"`
+	PublicIP string    `json:"publicip"`
+	Pending  bool      `json:"pending"`
 }
 
 // A list of connections!
@@ -44,10 +44,10 @@ func (c Connection) MarshalJSON() ([]byte, error) {
 	type Alias Connection
 	return json.Marshal(&struct {
 		Alias
-		time string
+		Time string `json:"time"`
 	}{
 		Alias: (Alias)(c),
-		time:  c.time.Format(time.RFC3339),
+		Time:  c.Time.UTC().Format(time.RFC3339),
 	})
 }
 
@@ -78,9 +78,12 @@ func (s *Service) Serve(listener net.Listener, tuntx chan<- []byte, tunrx <-chan
 	netblock := make(chan net.IP)
 	go runblock(netblock, statesub, hostcount, ip2int(servernet.IP))
 
+	// Channel to request contrack reports
+	reportchan := make(chan chan<- Connections)
+
 	// Track client connection lifetimes for reporting and enforcement
 	// Exits when contrackstate channel is closed
-	go contrack(statesub)
+	go contrack(statesub, reportchan)
 
 	// Channel to send client connection state changes to
 	clientstate := make(chan ClientState)
@@ -99,7 +102,7 @@ func (s *Service) Serve(listener net.Listener, tuntx chan<- []byte, tunrx <-chan
 	go acceptor(listener, connchan, s.shutdownGroup)
 
 	// Start metrics http server
-	go metrics()
+	go metrics(reportchan)
 
 	// Forever select on the done channel, and the client connection handler channel
 	for {

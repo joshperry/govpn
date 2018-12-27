@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 
@@ -55,7 +56,7 @@ var (
 	)
 )
 
-func metrics() {
+func metrics(reportchan chan<- chan<- Connections) {
 	// Register metrics
 	// Service
 	prometheus.MustRegister(accepted)
@@ -75,5 +76,19 @@ func metrics() {
 	msrv := http.NewServeMux()
 	// Expose the registered metrics via HTTP.
 	msrv.Handle("/metrics", promhttp.Handler())
+	msrv.HandleFunc("/clients", func(w http.ResponseWriter, req *http.Request) {
+		// Request connection list from the contrack service
+		respchan := make(chan Connections)
+		reportchan <- respchan
+		connections := <-respchan
+
+		if respbuf, err := json.Marshal(connections); nil != err {
+			log.Printf("server: contrack: report: error json enconding connection array: %s", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(respbuf)
+		}
+	})
 	log.Fatal(http.ListenAndServe("localhost:9000", msrv))
 }
