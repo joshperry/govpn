@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"log"
 	"net"
@@ -20,21 +19,6 @@ const (
 	Disconnect
 )
 
-// Info that the client sends in its first packet after connection
-// encoded as json
-type ClientInfo struct {
-	time    time.Time
-	version string
-}
-
-// Settings to send json encoded as the first packet to the client after reading
-// its first packet which contains ClientInfo
-type ClientSettings struct {
-	time    time.Time
-	version string
-	ip      string
-}
-
 // Couples a transition state with the target client for delivery on the client state channel
 // Any time a client changes state (connects or disconnects), a ClientState object representing the event is sent into the client state channel
 // The connect message is sent in the client connection handler
@@ -49,7 +33,7 @@ type ClientState struct {
 // Birthed in the client connection handler `func (s *Service) serve(/**/)` and used in messages sent for data route updates and ip address reaping
 type Client struct {
 	ip           net.IP // client tunnel ip
-	id           int64  // A unique identifier for this client connection
+	id           uint64 // A unique identifier for this client connection
 	connected    time.Time
 	disconnected time.Time
 	publicip     net.IP // client public ip
@@ -87,15 +71,8 @@ func NewClient(tlscon *tls.Conn) (*Client, error) {
 	// TODO: Do we need to do anything special to get the real remote address behind loadbalancer?
 	ipstring := tlscon.RemoteAddr().String()
 
-	// Get a random connection id
-	connectionid, err := randint64()
-	if err != nil {
-		return nil, errors.New("server: conn(term): unknown error getting random")
-	}
-
 	return &Client{
 		name:      name,
-		id:        connectionid,
 		connected: time.Now(),
 		publicip:  net.ParseIP(ipstring[0:strings.Index(ipstring, ":")]),
 		tx:        make(chan []byte),

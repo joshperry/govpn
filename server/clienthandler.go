@@ -1,66 +1,135 @@
 package main
 
 import (
+	"bufio"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
+	"net/textproto"
+	"strconv"
 	"time"
 
 	"golang.org/x/net/ipv4"
 )
 
+// Info that the client sends in its first packet after connection
+// encoded as json
+type ClientInfo struct {
+	Time    string `json:"time"`
+	Version string `json:"version"`
+}
+
+// Settings to send json encoded as the first packet to the client after reading
+// its first packet which contains ClientInfo
+type ClientSettings struct {
+	Time    string `json:"time"`
+	Version string `json:"version"`
+	IP      string `json:"ip"`
+}
+
 // Client handler function for :443
 func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- ClientState, netblock <-chan net.IP) {
 	// Leave the shutdown group when handler exits
-	defer s.shutdownGroup.Done()
+	defer s.clientGroup.Done()
 
 	// Close connection when handler exits
 	defer conn.Close()
 
-	log.Print("server: conn: starting")
+	// Get a random connection id
+	id, err := randUint64()
+	if err != nil {
+		log.Print("server: conn(term): unknown error getting random")
+		return
+	}
+
+	pid := &id
+	cprint := func(s interface{}) {
+		log.Printf("server: conn(%#X): %s", uint64(*pid), s)
+	}
+
+	cprintf := func(s string, args ...interface{}) {
+		log.Printf("server: conn(%#X): %s", uint64(*pid), fmt.Sprintf(s, args))
+	}
+
+	cprint("starting")
 
 	// Get a TLS connection from our plain net.Conn
 	tlscon, ok := conn.(*tls.Conn)
 	if !ok {
-		log.Print("server: conn(term): not a TLS connection")
+		cprint("(term): not a TLS connection")
 		return
 	}
 
 	// Progress to the tls handshake
-	err := tlscon.Handshake()
-	if err != nil {
-		log.Printf("server: conn(term): TLS handshake failed: %s", err)
+	if err := tlscon.Handshake(); err != nil {
+		cprintf("(term): TLS handshake failed: %s", err)
 		return
 	} else {
-		log.Print("server: conn: TLS handshake completed")
+		cprint("TLS handshake completed")
 	}
 
 	// Validate this connection as a valid new client
 	client, err := NewClient(tlscon)
 	if err != nil {
-		log.Printf("server: conn(term): error validating client: %s", err)
+		cprintf("(term): error validating client: %s", err)
 		//TODO: Send HTTP 403 response
 		//tlscon.Write()
 		return
 	}
+	client.id = id
 
-	// Producer that pumps the read-side of the client connection into the clientrx channel
-	// Exits on failing read after deferred conn.Close() or zero-length read from client close
-	s.shutdownGroup.Add(1)
-	clientrx := make(chan []byte)
-	go connrx(tlscon, clientrx, s.shutdownGroup)
+	// Create buffered reader for connection
+	bufrx := bufio.NewReader(conn)
 
 	// Application-Layer Handshake
-	// Read first packet from client with a timeout
-	select {
-	case infobuf := <-clientrx:
-		log.Print(infobuf)
+	// Read first packet from client
+	// This is ugly because we're not in channel-land yet
+	{
+		// Get headers
+		tp := textproto.NewReader(bufrx)
+		request, err := tp.ReadLine()
+		if err != nil {
+			cprintf("(term): error reading request line: %s", err)
+			return
+		}
+		cprint(string(request))
+
+		headers, err := tp.ReadMIMEHeader()
+		if err != nil {
+			cprintf("(term): error reading request headers: %s", err)
+			return
+		}
+		cprint("got headers")
+		cprint(headers)
+
+		// Get body
+		bodylen, err := strconv.ParseInt(headers["Content-Length"][0], 10, 64)
+		if err != nil {
+			cprint("(term): error parsing content-length header")
+		}
+
+		// TODO: Protect for content too large
+
+		body := make([]byte, bodylen)
+		n, err := bufrx.Read(body)
+		if err != nil {
+			cprint("(term): error reading request body")
+			return
+		}
+		cprint("got body")
+		cprint(string(body))
+
 		// Decode client info struct from json in the first packet, delimited with newline
 		var info ClientInfo
-		if err := json.Unmarshal(infobuf, &info); err != nil {
-			log.Print("server: conn(term): error decoding client info packet")
+		if err := json.Unmarshal(body, &info); err != nil {
+			cprint("(term): error decoding client info packet")
 			return
+		}
+
+		if bufrx.Buffered() != 0 {
+			panic("Didn't read all buffered bytes")
 		}
 
 		// TODO: Validate client info
@@ -70,30 +139,40 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 
 		// Create client settings to send
 		settings := ClientSettings{
-			time:    time.Now(),
-			version: "0.1.0",
-			ip:      client.ip.String(),
+			Time:    time.Now().UTC().Format(time.RFC3339),
+			Version: "0.1.0",
+			IP:      client.ip.String(),
 		}
 
 		// Encode client settings struct to newline delimited json and send as first packet
 		settingsbuf, err := json.Marshal(settings)
 		if err != nil {
-			log.Print("server: conn(term): error encoding client settings packet")
+			cprint("(term): error encoding client settings packet")
 			return
 		}
 
-		// Write the settings buffer out to the client
-		n, err := conn.Write(settingsbuf)
-		log.Printf("server: conn: sent client settings bytes: %d", n)
+		// Write http response and headers
+		conn.Write([]byte("HTTP/1.0 200 OK\n"))
+		conn.Write([]byte("Content-Type: application/json\n"))
+		conn.Write([]byte(fmt.Sprintf("Content-Length: %d\n", len(settingsbuf))))
+		conn.Write([]byte("\n"))
+
+		// Write the settings buffer
+		n, err = conn.Write(settingsbuf)
+		cprintf("sent client settings bytes: %d", n)
 		if err != nil {
-			log.Printf("server: conn(term): error sending client settings: %s", err)
+			cprintf("(term): error sending client settings: %s", err)
 			return
 		}
-
-	case <-time.After(2 * time.Minute): // TODO: Define in config
-		log.Print("server: conn(term): timed out waiting for client info")
-		return
 	}
+
+	// Enter channel-land! Ye blessed routine
+
+	// Producer that pumps the read-side of the client connection into the clientrx channel
+	// Exits on failing read after deferred conn.Close() or zero-length read from client close
+	s.clientGroup.Add(1)
+	clientrx := make(chan []byte)
+	go connrx(bufrx, clientrx, s.clientGroup)
 
 	// A channel to signal a write error to the client
 	writeerr := make(chan bool, 2)
@@ -101,13 +180,15 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 	// Pipe that pumps packets from the client rx channel into the client connection
 	// This needs to continue pumping until the txchan is closed or the router could stall
 	// Exits after `close(client.tx)` by router
-	s.shutdownGroup.Add(1)
-	go conntx(client.tx, tlscon, writeerr, s.shutdownGroup)
+	s.clientGroup.Add(1)
+	go conntx(client.tx, conn, writeerr, s.clientGroup)
 
 	// Defer client cleanup to when leaving the handler
 	defer func() {
 		// Record disconnect time in client
 		client.disconnected = time.Now()
+
+		cprint("sending disconnect client state")
 
 		// Send disconnect client state change
 		clientstate <- ClientState{
@@ -125,28 +206,30 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 		client:     client,
 	}
 
+	cprint("entering main loop")
+
 	// Forever select on the done channel, the rwerr channel, the clientrx read producer channel, and the control channel
 	// until a read or write operation fails, the done signal is received, or a control command terminates the connection
 	for {
 		select {
 		// Disconnect if we're told to shut down shop
 		case <-s.done:
-			log.Println("server: conn(term): got done signal", tlscon.RemoteAddr())
+			cprint("(term): got done signal")
 			return
 
 		// Disconnect if we error writing to client
 		case <-writeerr:
-			log.Print("server: conn(term): encountered client write error")
+			cprint("(term): encountered client write error")
 			return
 
 		// Consumes packets from the clientrx channel then sends them into the tuntx channel
 		case buf, ok := <-clientrx:
 			if !ok {
-				log.Print("server: conn(term): clientrx chan closed")
+				cprint("(term): clientrx chan closed")
 				return
 			}
 
-			log.Print("server: conn: received packet from client")
+			cprint("received packet from client")
 
 			// Grab the packet ip header
 			header, _ := ipv4.ParseHeader(buf)
@@ -165,7 +248,7 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 		case msg := <-client.control:
 			// Leave the loop if we are to disconnect
 			if msg == "disconnect" {
-				log.Print("server: conn(term): received disconnect control")
+				cprint("(term): received disconnect control")
 				return
 			}
 		}

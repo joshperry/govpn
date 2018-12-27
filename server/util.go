@@ -7,12 +7,12 @@ import (
 )
 
 // Generate a random 64bit value
-func randint64() (int64, error) {
+func randUint64() (uint64, error) {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return 0, err
 	}
-	return int64(binary.LittleEndian.Uint64(b[:])), nil
+	return binary.LittleEndian.Uint64(b[:]), nil
 }
 
 func ip2int(ip net.IP) uint32 {

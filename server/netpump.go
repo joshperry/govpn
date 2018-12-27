@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"encoding/binary"
 	"log"
 	"net"
 	"sync"
@@ -8,32 +10,43 @@ import (
 	"github.com/songgao/water"
 )
 
-func connrx(conn net.Conn, rxchan chan<- []byte, wait *sync.WaitGroup) {
+func connrx(rdr *bufio.Reader, rxchan chan<- []byte, wait *sync.WaitGroup) {
 	// Leave the wait group when the read pump exits
 	defer wait.Done()
-	defer close(rxchan)
+	defer func() {
+		log.Print("server: connrx: closing rxchan")
+		close(rxchan)
+	}()
 
 	log.Print("server: connrx: starting")
 
 	// Forever read
 	buf := make([]byte, MTU)
+	header := make([]byte, 4)
 	for {
 		log.Print("server: connrx: waiting")
 		// This ends when the connection is closed locally or remotely
-		n, err := conn.Read(buf)
+		// Read int header
+		n, err := rdr.Read(header)
 		if nil != err {
 			// Read failed, pumpexit the handler
-			log.Printf("server: connrx(term): error while reading: %s", err)
+			log.Printf("server: connrx(term): error while reading header: %s", err)
 			return
 		}
 
-		if n == 0 {
-			log.Print("server: connrx(term): remote client closed connection")
+		// Get the packet length as an int
+		packetlen := binary.BigEndian.Uint32(header)
+
+		// Read packet
+		n, err = rdr.Read(buf[:packetlen])
+		if nil != err {
+			// Read failed, pumpexit the handler
+			log.Printf("server: connrx(term): error while reading packet: %s", err)
 			return
 		}
 
 		// Send the packet to the rx channel
-		rxchan <- buf[:n]
+		rxchan <- buf[1:n]
 	}
 }
 
@@ -45,6 +58,8 @@ func conntx(txchan <-chan []byte, conn net.Conn, writeerr chan<- bool, wait *syn
 
 	// A simple one-shot flag is used to skip the write after failure
 	failed := false
+
+	headerbuf := make([]byte, 4)
 	// Pump the transmit channel until it is closed
 	for buf := range txchan {
 		log.Print("server: conntx: sending packet to client")
@@ -52,7 +67,12 @@ func conntx(txchan <-chan []byte, conn net.Conn, writeerr chan<- bool, wait *syn
 		if !failed {
 			//TODO: Any processing on packet from tun adapter
 
-			n, err := conn.Write(buf)
+			// Write packet length header
+			binary.BigEndian.PutUint32(headerbuf, uint32(len(buf)))
+			n, err := conn.Write(headerbuf)
+
+			// Write packet
+			n, err = conn.Write(buf)
 			log.Printf("server: conntx: wrote %d bytes", n)
 			if err != nil {
 				log.Printf("server: conntx(term): error while writing: %s", err)

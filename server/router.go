@@ -12,7 +12,7 @@ import (
 // then written to the client matching that address found in the routing table
 // Internal routing table is kept in sync by reading events from the statechan channel
 // Exits when statechan or rxchan are closed
-func route(rxchan <-chan []byte, statechan <-chan ClientState) {
+func route(rxchan <-chan []byte, subchan chan<- ClientStateSub) {
 
 	log.Print("server: router: starting")
 
@@ -20,9 +20,15 @@ func route(rxchan <-chan []byte, statechan <-chan ClientState) {
 	// routes are a mapping from client ip to a client's distinct tunrx channel
 	routes := make(map[uint32]chan<- []byte)
 
+	// Channel to receive client state
+	statechan := make(chan ClientState)
+
+	// Subscribe to client state stream
+	subchan <- ClientStateSub{name: "router", subchan: statechan}
+
 	for {
 		// serializing the state updates and state consumption in the same
-		// goroutine gives lock-free operation.
+		// uses select for mutual exclusion to modify/read state
 
 		// State messages update the routes map state
 		// Data routing consumes the routes map state
@@ -36,19 +42,25 @@ func route(rxchan <-chan []byte, statechan <-chan ClientState) {
 			// uint32 keys are used for the route map
 			ipint := ip2int(state.client.ip)
 			if state.transition == Connect {
-				log.Printf("server: route: got client connect %s", state.client.name)
+				log.Printf("server: route: got client connect %s-%#X", state.client.name, state.client.id)
 				// Add an item to the routing table
 				routes[ipint] = state.client.tx
 			} else if state.transition == Disconnect {
-				log.Printf("server: route: got client disconnect %s", state.client.name)
+				log.Printf("server: route: got client disconnect %s-%#X", state.client.name, state.client.id)
 				// Remove the client from the routing table and then close the client tx channel
 				// Once the disconnect message is recieved, the client handler has exited
-				tx := routes[ipint]
-				delete(routes, ipint)
-				// We close this channel here to finally release the read side pump in response to the close
-				close(tx)
+				if tx, ok := routes[ipint]; ok {
+					delete(routes, ipint)
+					// We close this channel here to finally release the read side pump in response to the close
+					close(tx)
+				} else {
+					// Didn't find a connection in the routes for this client... shouldn't happen
+					log.Printf("server: route(perm): close no open connection %s-%#X", state.client.name, state.client.id)
+					panic("close no open connection")
+				}
 			} else {
-				log.Printf("server: route: unhandled client transition state: %s", state.transition)
+				log.Printf("server: route(perm): unhandled client transition state: %d", state.transition)
+				panic("unhandled client transition state")
 			}
 
 		// Route packet to appropriate client tx channel
@@ -63,13 +75,13 @@ func route(rxchan <-chan []byte, statechan <-chan ClientState) {
 			header, err := ipv4.ParseHeader(buf)
 			if err != nil {
 				// If we couldn't parse IP headers, drop the packet
-				log.Printf("serverrx(dropped): could not parse packet header: %s", err)
+				log.Printf("server: route(dropped): could not parse packet header: %s", err)
 				continue
 			}
 
 			clientip := header.Dst
 
-			log.Printf("serverrx: got %d byte tun packet for %s", len(buf), clientip)
+			log.Printf("server: route: got %d byte tun packet for %s", len(buf), clientip)
 
 			// Lookup client in routing state
 			if clientrx, ok := routes[ip2int(clientip)]; ok {
