@@ -174,6 +174,7 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 
 	// Increment connect count metric here
 	connectcount.Inc()
+	defer disconnectcount.Inc()
 
 	// Enter channel-land! Ye blessed routine
 
