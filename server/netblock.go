@@ -25,7 +25,7 @@ func runblock(blockchan chan<- net.IP, subchan chan<- ClientStateSub, hostcount 
 
 	// Pump the netblock channel full of available addresses
 	// Excluding network, gateway, and broadcast
-	for i := uint32(1); i < hostcount-2; i++ {
+	for i := uint32(2); i < hostcount-1; i++ {
 		netblock <- int2ip(netip + i)
 	}
 

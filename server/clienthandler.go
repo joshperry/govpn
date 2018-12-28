@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
 	"golang.org/x/net/ipv4"
 )
 
@@ -54,7 +55,7 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 	}
 
 	cprintf := func(s string, args ...interface{}) {
-		log.Printf("server: conn(%#X): %s", uint64(*pid), fmt.Sprintf(s, args))
+		log.Printf("server: conn(%#X): %s", uint64(*pid), fmt.Sprintf(s, args...))
 	}
 
 	cprint("starting")
@@ -239,13 +240,14 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 				return
 			}
 
-			cprint("received packet from client")
-
 			// Grab the packet ip header
-			header, _ := ipv4.ParseHeader(buf)
+			headers, _ := ipv4.ParseHeader(buf)
+
+			cprintf("received packet %s", spew.Sdump(headers))
 
 			// Drop any packets with a source address different than the one allocated to the client
-			if !header.Src.Equal(client.ip) {
+			if !headers.Src.Equal(client.ip) {
+				cprint("dropped bogon")
 				continue
 			}
 
