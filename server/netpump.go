@@ -7,9 +7,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/songgao/water"
-	"golang.org/x/net/ipv4"
 )
 
 func connrx(rdr *bufio.Reader, rxchan chan<- []byte, wait *sync.WaitGroup) {
@@ -26,7 +24,7 @@ func connrx(rdr *bufio.Reader, rxchan chan<- []byte, wait *sync.WaitGroup) {
 	buf := make([]byte, MTU)
 	header := make([]byte, 4)
 	for {
-		log.Print("connrx: waiting")
+		//log.Print("connrx: waiting")
 		// This ends when the connection is closed locally or remotely
 		// Read int header
 		n, err := rdr.Read(header)
@@ -43,7 +41,7 @@ func connrx(rdr *bufio.Reader, rxchan chan<- []byte, wait *sync.WaitGroup) {
 		packetlen := binary.BigEndian.Uint32(header)
 
 		// Read packet
-		log.Printf("connrx: reading %d byte packet", packetlen)
+		//log.Printf("connrx: reading %d byte packet", packetlen)
 		n, err = rdr.Read(buf[:packetlen])
 		if nil != err {
 			// Read failed, pumpexit the handler
@@ -71,7 +69,7 @@ func conntx(txchan <-chan []byte, conn net.Conn, writeerr chan<- bool, wait *syn
 	headerbuf := make([]byte, 4)
 	// Pump the transmit channel until it is closed
 	for buf := range txchan {
-		log.Print("conntx: sending packet to client")
+		//log.Print("conntx: sending packet to client")
 
 		if !failed {
 			//TODO: Any processing on packet from tun adapter
@@ -84,14 +82,22 @@ func conntx(txchan <-chan []byte, conn net.Conn, writeerr chan<- bool, wait *syn
 				// If the write errors, signal the rwerr channel
 				writeerr <- true
 				failed = true
+			} else if n < len(headerbuf) {
+				log.Print("conntx(term): short write")
+				writeerr <- true
+				failed = true
 			}
 
 			// Write packet
 			n, err = conn.Write(buf)
-			log.Printf("conntx: wrote %d bytes", n)
+			//log.Printf("conntx: wrote %d bytes", n)
 			if err != nil {
 				log.Printf("conntx(term): error while writing packet: %s", err)
 				// If the write errors, signal the rwerr channel
+				writeerr <- true
+				failed = true
+			} else if n < len(buf) {
+				log.Print("conntx(term): short write")
 				writeerr <- true
 				failed = true
 			}
@@ -110,20 +116,19 @@ func tunrx(tun *water.Interface, rxchan chan<- []byte, wait *sync.WaitGroup) {
 	tunbuf := make([]byte, MTU)
 	for {
 		n, err := tun.Read(tunbuf)
-		headers, _ := ipv4.ParseHeader(tunbuf)
 
-		if headers.Version != 4 {
+		if tunbuf[0]&0xF0 != 4<<4 {
 			log.Printf("tunrx: dropping %d byte non-v4 packet", n)
 			continue
 		}
-		log.Printf("tunrx: got %d byte packet %s", n, spew.Sdump(headers))
+		//log.Printf("tunrx: got %d byte packet", n)
 
 		if err != nil {
 			// Stop pumping if read returns error
 			log.Printf("tunrx(term): error reading %s", err)
 			return
 		}
-		rxchan <- tunbuf[n:]
+		rxchan <- tunbuf[:n]
 	}
 }
 
@@ -136,9 +141,13 @@ func tuntx(txchan <-chan []byte, tun *water.Interface, wait *sync.WaitGroup) {
 	for tunbuf := range txchan {
 		// Write the buffer to the tun interface
 		n, err := tun.Write(tunbuf)
-		log.Printf("tuntx: wrote %d bytes", n)
+		//log.Printf("tuntx: wrote %d bytes", n)
 		if err != nil {
 			log.Printf("tuntx(term): error writing %s", err)
+			return
+		} else if n != len(tunbuf) {
+			// Stop pumping if read returns error
+			log.Printf("tuntx(term): short write %d of %d", n, len(tunbuf))
 			return
 		}
 	}

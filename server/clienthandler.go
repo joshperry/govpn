@@ -243,15 +243,13 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 			// Grab the packet ip header
 			headers, _ := ipv4.ParseHeader(buf)
 
-			cprintf("received packet %s", spew.Sdump(headers))
+			//cprintf("received packet %s", spew.Sdump(headers))
 
 			// Drop any packets with a source address different than the one allocated to the client
 			if !headers.Src.Equal(client.ip) {
-				cprint("dropped bogon")
+				cprintf("dropped bogon %s", spew.Sdump(headers))
 				continue
 			}
-
-			// TODO: Process packet to work on tun adapter?
 
 			// Push the received packet to the tun tx channel
 			tuntx <- buf

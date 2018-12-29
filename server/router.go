@@ -72,21 +72,21 @@ func route(rxchan <-chan []byte, subchan chan<- ClientStateSub) {
 			}
 
 			// Get destination IP from packet
-			header, err := ipv4.ParseHeader(buf)
+			headers, err := ipv4.ParseHeader(buf)
 			if err != nil {
 				// If we couldn't parse IP headers, drop the packet
 				log.Printf("server: route(dropped): could not parse packet header: %s", err)
 				continue
 			}
 
-			clientip := header.Dst
+			clientip := headers.Dst
 
-			log.Printf("server: route: got %d byte tun packet for %s", len(buf), clientip)
+			//log.Printf("server: route: got %d byte tun packet for %s", len(buf), clientip)
 
 			// Lookup client in routing state
-			if clientrx, ok := routes[ip2int(clientip)]; ok {
+			if tx, ok := routes[ip2int(clientip)]; ok {
 				// Send packet to client tunrx channel
-				clientrx <- buf
+				tx <- buf
 			} else {
 				//TODO: Send ICMP unreachable if no client found
 			}

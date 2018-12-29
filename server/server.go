@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/songgao/water"
+	"github.com/vishvananda/netlink"
 )
 
 const (
@@ -73,6 +74,13 @@ func main() {
 
 	// TODO: Set tun adapter address
 	log.Printf("server: setting TUN adapter address to %s", serverip)
+	// Set tun adapter settings and turn it up
+	nlhand, _ := netlink.NewHandle()
+	tunlink, _ := netlink.LinkByName("tun_govpn")
+	ipnet, _ := netlink.ParseAddr("192.168.0.1/21")
+	netlink.AddrAdd(tunlink, ipnet)
+	nlhand.LinkSetMTU(tunlink, 1300)
+	nlhand.LinkSetUp(tunlink)
 
 	// Waitgroup for waiting on main services to stop
 	mainwait := &sync.WaitGroup{}
