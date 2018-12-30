@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	sysctl "github.com/lorenzosaino/go-sysctl"
 	"github.com/vishvananda/netlink"
 )
 
@@ -104,6 +105,9 @@ func service(tlscon *tls.Conn, tunrxchan <-chan []byte, tuntxchan chan<- []byte,
 		netlink.AddrAdd(tunlink, ipnet)
 		nlhand.LinkSetMTU(tunlink, 1300)
 		nlhand.LinkSetUp(tunlink)
+
+		// Disable ipv6 on tun interface
+		err = sysctl.Set("net.ipv6.conf.tun_govpnc.disable_ipv6", "1")
 	}
 
 	// Channel for packets coming from the server

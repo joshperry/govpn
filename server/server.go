@@ -11,6 +11,7 @@ import (
 	"sync"
 	"syscall"
 
+	sysctl "github.com/lorenzosaino/go-sysctl"
 	"github.com/songgao/water"
 	"github.com/vishvananda/netlink"
 )
@@ -81,6 +82,9 @@ func main() {
 	netlink.AddrAdd(tunlink, ipnet)
 	nlhand.LinkSetMTU(tunlink, 1300)
 	nlhand.LinkSetUp(tunlink)
+
+	// Disable ipv6 on tun interface
+	err = sysctl.Set("net.ipv6.conf.tun_govpn.disable_ipv6", "1")
 
 	// Waitgroup for waiting on main services to stop
 	mainwait := &sync.WaitGroup{}

@@ -2,6 +2,7 @@ module github.com/prodatakey/tlsvpn
 
 require (
 	github.com/davecgh/go-spew v1.1.1
+	github.com/lorenzosaino/go-sysctl v0.1.0
 	github.com/prometheus/client_golang v0.9.2
 	github.com/songgao/water v0.0.0-20180420064739-bf1a5d02778f
 	github.com/vishvananda/netlink v1.0.0

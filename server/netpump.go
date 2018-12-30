@@ -117,10 +117,6 @@ func tunrx(tun *water.Interface, rxchan chan<- []byte, wait *sync.WaitGroup) {
 	for {
 		n, err := tun.Read(tunbuf)
 
-		if tunbuf[0]&0xF0 != 4<<4 {
-			log.Printf("tunrx: dropping %d byte non-v4 packet", n)
-			continue
-		}
 		//log.Printf("tunrx: got %d byte packet", n)
 
 		if err != nil {
