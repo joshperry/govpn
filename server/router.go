@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"time"
 
 	"golang.org/x/net/ipv4"
 )
@@ -42,11 +43,11 @@ func route(rxchan <-chan []byte, subchan chan<- ClientStateSub) {
 			// uint32 keys are used for the route map
 			ipint := ip2int(state.client.ip)
 			if state.transition == Connect {
-				log.Printf("server: route: got client connect %s-%#X", state.client.name, state.client.id)
+				log.Printf("server: route: got client connect %s %s-%#X", state.client.ip, state.client.name, state.client.id)
 				// Add an item to the routing table
 				routes[ipint] = state.client.tx
 			} else if state.transition == Disconnect {
-				log.Printf("server: route: got client disconnect %s-%#X", state.client.name, state.client.id)
+				log.Printf("server: route: got client disconnect %s %s-%#X", state.client.ip, state.client.name, state.client.id)
 				// Remove the client from the routing table and then close the client tx channel
 				// Once the disconnect message is recieved, the client handler has exited
 				if tx, ok := routes[ipint]; ok {
@@ -55,7 +56,7 @@ func route(rxchan <-chan []byte, subchan chan<- ClientStateSub) {
 					close(tx)
 				} else {
 					// Didn't find a connection in the routes for this client... shouldn't happen
-					log.Printf("server: route(perm): close no open connection %s-%#X", state.client.name, state.client.id)
+					log.Printf("server: route(perm): close no open connection %s %s-%#X", state.client.ip, state.client.name, state.client.id)
 					panic("close no open connection")
 				}
 			} else {
@@ -70,6 +71,7 @@ func route(rxchan <-chan []byte, subchan chan<- ClientStateSub) {
 				log.Print("server: route(term): rxchan closed")
 				return
 			}
+			start := time.Now()
 
 			// Get destination IP from packet
 			headers, err := ipv4.ParseHeader(buf)
@@ -89,7 +91,10 @@ func route(rxchan <-chan []byte, subchan chan<- ClientStateSub) {
 				tx <- buf
 			} else {
 				//TODO: Send ICMP unreachable if no client found
+				log.Printf("server: route: found no client for %d byte tun packet to %s", len(buf), clientip)
 			}
+
+			route_durationmetric.Observe(time.Since(start).Seconds())
 		}
 	}
 }

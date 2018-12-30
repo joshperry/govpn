@@ -54,9 +54,20 @@ var (
 		},
 		[]string{"table"},
 	)
+
+	// Router
+	route_durationmetric = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "vpn_router_seconds",
+			Help:    "Router packet delivery time",
+			Buckets: prometheus.ExponentialBuckets(0.0001, 2, 5),
+		},
+	)
 )
 
 func metrics(reportchan chan<- chan<- Connections) {
+	log.Print("metrics: starting")
+
 	// Register metrics
 	// Service
 	prometheus.MustRegister(acceptedmetric)
@@ -72,6 +83,9 @@ func metrics(reportchan chan<- chan<- Connections) {
 
 	// Netblock
 	prometheus.MustRegister(netblock_usemetric)
+
+	// Router
+	prometheus.MustRegister(route_durationmetric)
 
 	msrv := http.NewServeMux()
 	// Expose the registered metrics via HTTP.
@@ -90,5 +104,7 @@ func metrics(reportchan chan<- chan<- Connections) {
 			w.Write(respbuf)
 		}
 	})
+	// TODO: get from config
+	log.Print("metrics: http listen on 9000")
 	log.Fatal(http.ListenAndServe("localhost:9000", msrv))
 }
