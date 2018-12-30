@@ -52,8 +52,12 @@ func connrx(rdr *bufio.Reader, rxchan chan<- []byte, wait *sync.WaitGroup) {
 			return
 		}
 
+		// Copy the packet into a fresh buffer
+		packet := make([]byte, packetlen)
+		copy(packet, buf[:packetlen])
+
 		// Send the packet to the rx channel
-		rxchan <- buf[:packetlen]
+		rxchan <- packet
 	}
 }
 
@@ -124,7 +128,12 @@ func tunrx(tun *water.Interface, rxchan chan<- []byte, wait *sync.WaitGroup) {
 			log.Printf("tunrx(term): error reading %s", err)
 			return
 		}
-		rxchan <- tunbuf[:n]
+
+		// Copy the packet into a fresh buffer
+		packet := make([]byte, n)
+		copy(packet, tunbuf[:n])
+
+		rxchan <- packet
 	}
 }
 
