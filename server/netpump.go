@@ -82,27 +82,16 @@ func conntx(txchan <-chan []byte, conn net.Conn, writeerr chan<- bool, wait *syn
 
 			// Write packet length header
 			binary.BigEndian.PutUint32(headerbuf, uint32(len(buf)))
-			n, err := conn.Write(headerbuf)
-			if err != nil {
-				log.Printf("conntx(term): error while writing header: %s", err)
-				// If the write errors, signal the rwerr channel
-				writeerr <- true
-				failed = true
-			} else if n < len(headerbuf) {
-				log.Print("conntx(term): short write")
-				writeerr <- true
-				failed = true
-			}
 
 			// Write packet
-			n, err = conn.Write(buf)
+			n, err := conn.Write(append(headerbuf, buf...))
 			//log.Printf("conntx: wrote %d bytes", n)
 			if err != nil {
 				log.Printf("conntx(term): error while writing packet: %s", err)
 				// If the write errors, signal the rwerr channel
 				writeerr <- true
 				failed = true
-			} else if n < len(buf) {
+			} else if n < len(buf)+4 {
 				log.Print("conntx(term): short write")
 				writeerr <- true
 				failed = true
