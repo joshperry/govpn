@@ -241,6 +241,7 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 			}
 
 			// Grab the packet ip header
+			// TODO: Handle error?
 			headers, _ := ipv4.ParseHeader(buf)
 
 			//cprintf("received packet %s", spew.Sdump(headers))
@@ -254,10 +255,13 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 			// Push the received packet to the tun tx channel
 			tuntx <- buf
 
+			rx_packetsmetric.Inc()
+			rx_bytesmetric.Add(float64(len(buf)))
+
 		// Handle client control messages
-		case msg := <-client.control:
+		case _, ok := <-client.control:
 			// Leave the loop if we are to disconnect
-			if msg == "disconnect" {
+			if !ok {
 				cprint("(term): received disconnect control")
 				return
 			}

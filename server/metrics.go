@@ -56,17 +56,39 @@ var (
 	)
 
 	// Router
+	rx_packetsmetric = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "vpn_rx_packets",
+		Help: "Number of packets received from clients",
+	})
+	tx_packetsmetric = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "vpn_tx_packets",
+		Help: "Number of packets sent to clients",
+	})
+	rx_bytesmetric = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "vpn_rx_bytes",
+		Help: "Number of bytes received from clients",
+	})
+	tx_bytesmetric = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "vpn_tx_bytes",
+		Help: "Number of bytes sent to clients",
+	})
 	route_durationmetric = prometheus.NewHistogram(
 		prometheus.HistogramOpts{
-			Name:    "vpn_router_seconds",
+			Name:    "vpn_router_nseconds",
 			Help:    "Router packet delivery time",
-			Buckets: prometheus.ExponentialBuckets(0.0001, 2, 5),
+			Buckets: prometheus.ExponentialBuckets(156, 2, 5),
 		},
 	)
 )
 
 func metrics(reportchan chan<- chan<- Connections) {
 	log.Print("metrics: starting")
+
+	// Launch profiling metrics
+	go func() {
+		log.Print("metrics: pprof http listen on 6060")
+		log.Print(http.ListenAndServe("0.0.0.0:6060", nil))
+	}()
 
 	// Register metrics
 	// Service
@@ -85,6 +107,10 @@ func metrics(reportchan chan<- chan<- Connections) {
 	prometheus.MustRegister(netblock_usemetric)
 
 	// Router
+	prometheus.MustRegister(tx_packetsmetric)
+	prometheus.MustRegister(rx_packetsmetric)
+	prometheus.MustRegister(tx_bytesmetric)
+	prometheus.MustRegister(rx_bytesmetric)
 	prometheus.MustRegister(route_durationmetric)
 
 	msrv := http.NewServeMux()
@@ -106,5 +132,5 @@ func metrics(reportchan chan<- chan<- Connections) {
 	})
 	// TODO: get from config
 	log.Print("metrics: http listen on 9000")
-	log.Fatal(http.ListenAndServe("localhost:9000", msrv))
+	log.Fatal(http.ListenAndServe("0.0.0.0:9000", msrv))
 }

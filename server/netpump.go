@@ -21,7 +21,6 @@ func connrx(rdr *bufio.Reader, rxchan chan<- []byte, wait *sync.WaitGroup) {
 	log.Print("connrx: starting")
 
 	// Forever read
-	buf := make([]byte, MTU)
 	header := make([]byte, 4)
 	for {
 		//log.Print("connrx: waiting")
@@ -39,22 +38,25 @@ func connrx(rdr *bufio.Reader, rxchan chan<- []byte, wait *sync.WaitGroup) {
 
 		// Get the packet length as an int
 		packetlen := binary.BigEndian.Uint32(header)
+		if packetlen > MTU {
+			log.Printf("connrx(term): packetlen %d MTU too small or lost framing sync", packetlen)
+			return
+		}
+
+		buf := make([]byte, MTU) // TODO: Do same size allocations help with GC?
+		packet := buf[:packetlen]
 
 		// Read packet
 		//log.Printf("connrx: reading %d byte packet", packetlen)
-		n, err = rdr.Read(buf[:packetlen])
+		n, err = rdr.Read(packet)
 		if nil != err {
 			// Read failed, pumpexit the handler
 			log.Printf("connrx(term): error while reading packet: %s", err)
 			return
-		} else if n < len(buf[:packetlen]) {
+		} else if n < len(packet) {
 			log.Print("connrx(term): short read")
 			return
 		}
-
-		// Copy the packet into a fresh buffer
-		packet := make([]byte, packetlen)
-		copy(packet, buf[:packetlen])
 
 		// Send the packet to the rx channel
 		rxchan <- packet
@@ -117,8 +119,8 @@ func tunrx(tun *water.Interface, rxchan chan<- []byte, wait *sync.WaitGroup) {
 
 	log.Print("tunrx: starting")
 
-	tunbuf := make([]byte, MTU)
 	for {
+		tunbuf := make([]byte, MTU)
 		n, err := tun.Read(tunbuf)
 
 		//log.Printf("tunrx: got %d byte packet", n)
@@ -129,11 +131,7 @@ func tunrx(tun *water.Interface, rxchan chan<- []byte, wait *sync.WaitGroup) {
 			return
 		}
 
-		// Copy the packet into a fresh buffer
-		packet := make([]byte, n)
-		copy(packet, tunbuf[:n])
-
-		rxchan <- packet
+		rxchan <- tunbuf[:n]
 	}
 }
 

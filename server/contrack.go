@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"time"
 )
 
 func contrack(subchan chan<- ClientStateSub, reportchan <-chan chan<- Connections) {
@@ -35,15 +36,13 @@ func contrack(subchan chan<- ClientStateSub, reportchan <-chan chan<- Connection
 				// See if we have any existing client connections with this name
 				other, ok := contrack[state.client.name]
 				if ok {
-					contrack_enforcedmetric.Inc()
-					/* this does not work under concurrency yet, other client can be disconnected before we send this even with disconnected check
 					// Enforce single connection per client by disconnecting any existing connections for the client name
 					if (other.disconnected == time.Time{}) {
 						// Only send if it isn't disconnected already
+						contrack_enforcedmetric.Inc()
 						log.Printf("server: contrack: enforce disconnect on %s-%#X", other.name, other.id)
-						other.control <- "disconnect"
+						//TODO: close(other.control)
 					}
-					*/
 					// Save the disconnecting client into the deltrack list to await its final goodbye
 					log.Printf("server: contrack: saving to deltrack %s-%#X", other.name, other.id)
 					deltrack[other.id] = other

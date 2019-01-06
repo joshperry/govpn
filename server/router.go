@@ -1,10 +1,9 @@
 package main
 
 import (
+	"encoding/binary"
 	"log"
 	"time"
-
-	"golang.org/x/net/ipv4"
 )
 
 //====
@@ -74,27 +73,22 @@ func route(rxchan <-chan []byte, subchan chan<- ClientStateSub) {
 			start := time.Now()
 
 			// Get destination IP from packet
-			headers, err := ipv4.ParseHeader(buf)
-			if err != nil {
-				// If we couldn't parse IP headers, drop the packet
-				log.Printf("server: route(dropped): could not parse packet header: %s", err)
-				continue
-			}
-
-			clientip := headers.Dst
+			clientip := binary.BigEndian.Uint32(buf[16:20])
 
 			//log.Printf("server: route: got %d byte tun packet for %s", len(buf), clientip)
 
 			// Lookup client in routing state
-			if tx, ok := routes[ip2int(clientip)]; ok {
+			if tx, ok := routes[clientip]; ok {
 				// Send packet to client tunrx channel
 				tx <- buf
 			} else {
 				//TODO: Send ICMP unreachable if no client found
-				log.Printf("server: route: found no client for %d byte tun packet to %s", len(buf), clientip)
+				log.Printf("server: route: found no client for %d byte tun packet to %s", len(buf), int2ip(clientip))
 			}
 
-			route_durationmetric.Observe(time.Since(start).Seconds())
+			route_durationmetric.Observe(float64(time.Since(start).Nanoseconds()))
+			tx_packetsmetric.Inc()
+			tx_bytesmetric.Add(float64(len(buf)))
 		}
 	}
 }
