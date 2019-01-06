@@ -72,7 +72,6 @@ func conntx(txchan <-chan []byte, conn net.Conn, writeerr chan<- bool, wait *syn
 	// A simple one-shot flag is used to skip the write after failure
 	failed := false
 
-	headerbuf := make([]byte, 4)
 	// Pump the transmit channel until it is closed
 	for buf := range txchan {
 		//log.Print("conntx: sending packet to client")
@@ -80,18 +79,15 @@ func conntx(txchan <-chan []byte, conn net.Conn, writeerr chan<- bool, wait *syn
 		if !failed {
 			//TODO: Any processing on packet from tun adapter
 
-			// Write packet length header
-			binary.BigEndian.PutUint32(headerbuf, uint32(len(buf)))
-
-			// Write packet
-			n, err := conn.Write(append(headerbuf, buf...))
+			// Write packet (already contains header from tunrx)
+			n, err := conn.Write(buf)
 			//log.Printf("conntx: wrote %d bytes", n)
 			if err != nil {
 				log.Printf("conntx(term): error while writing packet: %s", err)
 				// If the write errors, signal the rwerr channel
 				writeerr <- true
 				failed = true
-			} else if n < len(buf)+4 {
+			} else if n < len(buf) {
 				log.Print("conntx(term): short write")
 				writeerr <- true
 				failed = true
@@ -109,8 +105,9 @@ func tunrx(tun *water.Interface, rxchan chan<- []byte, wait *sync.WaitGroup) {
 	log.Print("tunrx: starting")
 
 	for {
-		tunbuf := make([]byte, MTU)
-		n, err := tun.Read(tunbuf)
+		// Make room at the beginning for the packet length
+		tunbuf := make([]byte, MTU+4)
+		n, err := tun.Read(tunbuf[4:])
 
 		//log.Printf("tunrx: got %d byte packet", n)
 
@@ -120,7 +117,9 @@ func tunrx(tun *water.Interface, rxchan chan<- []byte, wait *sync.WaitGroup) {
 			return
 		}
 
-		rxchan <- tunbuf[:n]
+		// Put the packet length at the beginning of the packet
+		binary.BigEndian.PutUint32(tunbuf, uint32(n))
+		rxchan <- tunbuf[:n+4]
 	}
 }
 

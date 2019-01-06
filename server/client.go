@@ -33,6 +33,7 @@ type ClientState struct {
 // Birthed in the client connection handler `func (s *Service) serve(/**/)` and used in messages sent for data route updates and ip address reaping
 type Client struct {
 	ip           net.IP // client tunnel ip
+	intip        uint32 // client tunnel ip as an integer
 	id           uint64 // A unique identifier for this client connection
 	connected    time.Time
 	disconnected time.Time

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,9 +11,6 @@ import (
 	"net/textproto"
 	"strconv"
 	"time"
-
-	"github.com/davecgh/go-spew/spew"
-	"golang.org/x/net/ipv4"
 )
 
 // Info that the client sends in its first packet after connection
@@ -143,6 +141,7 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 
 		// Allocate client IP address
 		client.ip = <-netblock
+		client.intip = ip2int(client.ip)
 
 		// Create client settings to send
 		settings := ClientSettings{
@@ -240,15 +239,14 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 				return
 			}
 
-			// Grab the packet ip header
-			// TODO: Handle error?
-			headers, _ := ipv4.ParseHeader(buf)
+			// Grab the packet srcip
+			srcip := binary.BigEndian.Uint32(buf[12:16])
 
 			//cprintf("received packet %s", spew.Sdump(headers))
 
 			// Drop any packets with a source address different than the one allocated to the client
-			if !headers.Src.Equal(client.ip) {
-				cprintf("dropped bogon %s", spew.Sdump(headers))
+			if srcip != client.intip {
+				cprintf("dropped bogon %s", int2ip(srcip))
 				continue
 			}
 

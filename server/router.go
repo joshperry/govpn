@@ -72,8 +72,8 @@ func route(rxchan <-chan []byte, subchan chan<- ClientStateSub) {
 			}
 			start := time.Now()
 
-			// Get destination IP from packet
-			clientip := binary.BigEndian.Uint32(buf[16:20])
+			// Get destination IP from packet (take into account packet length header added by tunrx)
+			clientip := binary.BigEndian.Uint32(buf[20:24])
 
 			//log.Printf("server: route: got %d byte tun packet for %s", len(buf), clientip)
 
