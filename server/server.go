@@ -81,7 +81,7 @@ func main() {
 	tunlink, _ := netlink.LinkByName("tun_govpn")
 	ipnet, _ := netlink.ParseAddr("192.168.0.1/21")
 	netlink.AddrAdd(tunlink, ipnet)
-	nlhand.LinkSetMTU(tunlink, 1300)
+	nlhand.LinkSetMTU(tunlink, MTU)
 	nlhand.LinkSetUp(tunlink)
 
 	// Disable ipv6 on tun interface
@@ -95,15 +95,23 @@ func main() {
 	// If this stops pumping then client handler writes to the tuntx channel will stall
 	// TODO: Read does not end when tun interface is closed, hacking to let process termination close this routine, remember to uncomment wait.Done in tunrx impl
 	//mainwait.Add(1) // hacked out because read does not end (see above todo), process termination does
-	tunrxchan := make(chan []byte)
-	go tunrx(iface, tunrxchan, mainwait)
+	rxbufpool := make(chan *message, 10)
+	for i := 0; i < cap(rxbufpool); i++ {
+		rxbufpool <- &message{}
+	}
+	tunrxchan := make(chan *message)
+	go tunrx(iface, tunrxchan, mainwait, rxbufpool)
 
 	// Consumer that reads packets off of the tuntx channel and writes them to the tun interface
 	// Any packet received on the client tls socket is written to the tuntx channel by a goroutine in `serve()`
 	// Exits when txchan is closed
+	txbufpool := make(chan *message, 10)
+	for i := 0; i < cap(txbufpool); i++ {
+		txbufpool <- &message{}
+	}
+	tuntxchan := make(chan *message)
 	mainwait.Add(1)
-	tuntxchan := make(chan []byte)
-	go tuntx(tuntxchan, iface, mainwait)
+	go tuntx(tuntxchan, iface, mainwait, txbufpool)
 
 	// Listen on tcp:443
 	// TODO: Get from config
@@ -116,7 +124,7 @@ func main() {
 	// Create an instance of the VPN server service
 	// Run it 5 times with the active listener to accept connections, tun channels for tun comms, and server network info
 	service := NewService()
-	go service.Serve(listener, tuntxchan, tunrxchan, servernet)
+	go service.Serve(listener, tuntxchan, txbufpool, tunrxchan, rxbufpool, servernet)
 
 	// Handle SIGINT and SIGTERM
 	sigs := make(chan os.Signal)

@@ -12,13 +12,13 @@ import (
 // then written to the client matching that address found in the routing table
 // Internal routing table is kept in sync by reading events from the statechan channel
 // Exits when statechan or rxchan are closed
-func route(rxchan <-chan []byte, subchan chan<- ClientStateSub) {
+func route(rxchan <-chan *message, subchan chan<- ClientStateSub, bufpool chan<- *message) {
 
 	log.Print("server: router: starting")
 
 	// routing table state used only in this goroutine
 	// routes are a mapping from client ip to a client's distinct tunrx channel
-	routes := make(map[uint32]chan<- []byte)
+	routes := make(map[uint32]chan<- *message)
 
 	// Channel to receive client state
 	statechan := make(chan ClientState)
@@ -65,30 +65,33 @@ func route(rxchan <-chan []byte, subchan chan<- ClientStateSub) {
 
 		// Route packet to appropriate client tx channel
 		// Channel is closed when tun interface read loop exits (in main)
-		case buf, ok := <-rxchan:
+		case msg, ok := <-rxchan:
 			if !ok { // If the receive channel is closed, exit the loop
 				log.Print("server: route(term): rxchan closed")
+				bufpool <- msg // return message to pool
 				return
 			}
 			start := time.Now()
 
-			// Get destination IP from packet (take into account packet length header added by tunrx)
-			clientip := binary.BigEndian.Uint32(buf[20:24])
+			// Get destination IP from packet
+			clientip := binary.BigEndian.Uint32(msg.packet()[16:20])
 
 			//log.Printf("server: route: got %d byte tun packet for %s", len(buf), clientip)
 
 			// Lookup client in routing state
 			if tx, ok := routes[clientip]; ok {
-				// Send packet to client tunrx channel
-				tx <- buf
+				// Send packet to client tx channel
+				tx <- msg
 			} else {
 				//TODO: Send ICMP unreachable if no client found
-				log.Printf("server: route: found no client for %d byte tun packet to %s", len(buf), int2ip(clientip))
+				log.Printf("server: route: found no client for %d byte tun packet to %s", msg.len, int2ip(clientip))
+				bufpool <- msg // return message to pool
+				// TODO: metricize this
 			}
 
 			route_durationmetric.Observe(float64(time.Since(start).Nanoseconds()))
 			tx_packetsmetric.Inc()
-			tx_bytesmetric.Add(float64(len(buf)))
+			tx_bytesmetric.Add(float64(msg.len))
 		}
 	}
 }

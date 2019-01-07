@@ -29,7 +29,7 @@ type ClientSettings struct {
 }
 
 // Client handler function for :443
-func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- ClientState, netblock <-chan net.IP) {
+func (s *Service) serve(conn net.Conn, tuntx chan<- *message, txbufpool chan *message, rxbufpool chan<- *message, clientstate chan<- ClientState, netblock <-chan net.IP) {
 	// Leave the shutdown group when handler exits
 	defer s.clientGroup.Done()
 
@@ -181,8 +181,8 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 	// Producer that pumps the read-side of the client connection into the clientrx channel
 	// Exits on failing read after deferred conn.Close() or zero-length read from client close
 	s.clientGroup.Add(1)
-	clientrx := make(chan []byte)
-	go connrx(bufrx, clientrx, s.clientGroup)
+	clientrx := make(chan *message)
+	go connrx(bufrx, clientrx, s.clientGroup, txbufpool)
 
 	// A channel to signal a write error to the client
 	writeerr := make(chan bool, 2)
@@ -191,7 +191,7 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 	// This needs to continue pumping until the txchan is closed or the router could stall
 	// Exits after `close(client.tx)` by router
 	s.clientGroup.Add(1)
-	go conntx(client.tx, conn, writeerr, s.clientGroup)
+	go conntx(client.tx, conn, writeerr, s.clientGroup, rxbufpool)
 
 	// Defer client cleanup to when leaving the handler
 	defer func() {
@@ -216,6 +216,32 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 		client:     client,
 	}
 
+	// Consumes packets from the clientrx channel then sends them into the tuntx channel
+	readerr := make(chan bool)
+	go func() {
+		for msg := range clientrx {
+			// Grab the packet srcip
+			srcip := binary.BigEndian.Uint32(msg.packet()[12:16])
+
+			//cprintf("received packet %s", spew.Sdump(headers))
+
+			// Drop any packets with a source address different than the one allocated to the client
+			if srcip != client.intip {
+				cprintf("dropped bogon %s", int2ip(srcip))
+				txbufpool <- msg // put message back in pool
+				continue
+			}
+
+			// Push the received packet to the tun tx channel
+			tuntx <- msg
+
+			rx_packetsmetric.Inc()
+			rx_bytesmetric.Add(float64(msg.len))
+		}
+		cprint("(term): clientrx chan closed")
+		close(readerr)
+	}()
+
 	cprint("entering main loop")
 
 	// Forever select on the done channel, the rwerr channel, the clientrx read producer channel, and the control channel
@@ -227,34 +253,14 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- []byte, clientstate chan<- C
 			cprint("(term): got done signal")
 			return
 
+		case <-readerr:
+			cprint("(term): encountered client read error")
+			return
+
 		// Disconnect if we error writing to client
 		case <-writeerr:
 			cprint("(term): encountered client write error")
 			return
-
-		// Consumes packets from the clientrx channel then sends them into the tuntx channel
-		case buf, ok := <-clientrx:
-			if !ok {
-				cprint("(term): clientrx chan closed")
-				return
-			}
-
-			// Grab the packet srcip
-			srcip := binary.BigEndian.Uint32(buf[12:16])
-
-			//cprintf("received packet %s", spew.Sdump(headers))
-
-			// Drop any packets with a source address different than the one allocated to the client
-			if srcip != client.intip {
-				cprintf("dropped bogon %s", int2ip(srcip))
-				continue
-			}
-
-			// Push the received packet to the tun tx channel
-			tuntx <- buf
-
-			rx_packetsmetric.Inc()
-			rx_bytesmetric.Add(float64(len(buf)))
 
 		// Handle client control messages
 		case _, ok := <-client.control:

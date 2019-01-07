@@ -77,15 +77,25 @@ func main() {
 	// Waitgroup for waiting on main services to stop
 	mainwait := &sync.WaitGroup{}
 
+	rxbufpool := make(chan *message, 10)
+	for i := 0; i < cap(rxbufpool); i++ {
+		rxbufpool <- &message{}
+	}
+
 	// Pump packets from the tun adapter into a channel
 	// mainwait.Add(1) // Not used for now because closing the tun interface doesn't break the read
-	tunrxchan := make(chan []byte)
-	go tunrx(iface, tunrxchan, mainwait)
+	tunrxchan := make(chan *message)
+	go tunrx(iface, tunrxchan, mainwait, rxbufpool)
+
+	txbufpool := make(chan *message, 10)
+	for i := 0; i < cap(txbufpool); i++ {
+		txbufpool <- &message{}
+	}
 
 	// Pump packets from a channel into the tun adapter
 	mainwait.Add(1)
-	tuntxchan := make(chan []byte)
-	go tuntx(tuntxchan, iface, mainwait)
+	tuntxchan := make(chan *message)
+	go tuntx(tuntxchan, iface, mainwait, txbufpool)
 
 	// Connect to server
 	tlscon, err := tls.Dial("tcp", "vpnserver:443", tlsconfig)
@@ -98,7 +108,7 @@ func main() {
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
 	done := make(chan bool)
-	go service(tlscon, tunrxchan, tuntxchan, done, mainwait)
+	go service(tlscon, tunrxchan, rxbufpool, tuntxchan, txbufpool, done, mainwait)
 
 	select {
 	case sig := <-sigs:

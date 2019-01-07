@@ -55,7 +55,7 @@ func (c Connection) MarshalJSON() ([]byte, error) {
 // Stop listening if anything is received on the done channel.
 // tuntx: channel to write packets from the client to the tun adapter
 // tunrx: channel to read packets for the clients from the tun adapter
-func (s *Service) Serve(listener net.Listener, tuntx chan<- []byte, tunrx <-chan []byte, servernet *net.IPNet) {
+func (s *Service) Serve(listener net.Listener, tuntx chan<- *message, txbufpool chan *message, tunrx <-chan *message, rxbufpool chan<- *message, servernet *net.IPNet) {
 	defer s.shutdownGroup.Done()
 	// Close the listener when the server stops
 	defer listener.Close()
@@ -65,7 +65,7 @@ func (s *Service) Serve(listener net.Listener, tuntx chan<- []byte, tunrx <-chan
 	// Route packets bound for clients as they come in the tunrx channel
 	// Uses clientstate channel to keep internal routing table up to date
 	// Exits when tunrx or clientstate channels are closed
-	go route(tunrx, statesub)
+	go route(tunrx, statesub, rxbufpool)
 
 	// Calculate netblock info
 	netmasklen, networksize := servernet.Mask.Size()
@@ -128,7 +128,7 @@ func (s *Service) Serve(listener net.Listener, tuntx chan<- []byte, tunrx <-chan
 			log.Printf("server: %s connected", conn.RemoteAddr())
 			// Add a client to the waitgroup, and handle it in a goroutine
 			s.clientGroup.Add(1)
-			go s.serve(conn, tuntx, clientstate, netblock)
+			go s.serve(conn, tuntx, txbufpool, rxbufpool, clientstate, netblock)
 			acceptedmetric.Inc()
 		}
 	}

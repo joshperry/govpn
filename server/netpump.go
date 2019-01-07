@@ -10,7 +10,20 @@ import (
 	"github.com/songgao/water"
 )
 
-func connrx(rdr *bufio.Reader, rxchan chan<- []byte, wait *sync.WaitGroup) {
+type message struct {
+	buf [MTU + 4]byte
+	len int
+}
+
+func (msg *message) packet() []byte {
+	return msg.buf[4 : msg.len+4]
+}
+
+func (msg *message) wirepacket() []byte {
+	return msg.buf[:msg.len+4]
+}
+
+func connrx(rdr *bufio.Reader, rxchan chan<- *message, wait *sync.WaitGroup, bufpool chan *message) {
 	// Leave the wait group when the read pump exits
 	defer wait.Done()
 	defer func() {
@@ -21,49 +34,51 @@ func connrx(rdr *bufio.Reader, rxchan chan<- []byte, wait *sync.WaitGroup) {
 	log.Print("connrx: starting")
 
 	// Forever read
-	header := make([]byte, 4)
+	headerbuf := make([]byte, 4)
 	for {
 		//log.Print("connrx: waiting")
 		// This ends when the connection is closed locally or remotely
 		// Read int header
-		n, err := rdr.Read(header)
+		n, err := rdr.Read(headerbuf)
 		if nil != err {
 			// Read failed, pumpexit the handler
 			log.Printf("connrx(term): error while reading header: %s", err)
 			return
-		} else if n < len(header) {
+		} else if n < len(headerbuf) {
 			log.Print("connrx(term): short read")
 			return
 		}
 
 		// Get the packet length as an int
-		packetlen := binary.BigEndian.Uint32(header)
+		packetlen := binary.BigEndian.Uint32(headerbuf)
 		if packetlen > MTU {
 			log.Printf("connrx(term): packetlen %d MTU too small or lost framing sync", packetlen)
 			return
 		}
 
-		buf := make([]byte, MTU) // TODO: Do same size allocations help with GC?
-		packet := buf[:packetlen]
+		msg := <-bufpool
+		msg.len = int(packetlen)
 
 		// Read packet
 		//log.Printf("connrx: reading %d byte packet", packetlen)
-		n, err = rdr.Read(packet)
+		n, err = rdr.Read(msg.packet())
 		if nil != err {
 			// Read failed, pumpexit the handler
 			log.Printf("connrx(term): error while reading packet: %s", err)
+			bufpool <- msg // return the message
 			return
-		} else if n < len(packet) {
-			log.Print("connrx(term): short read")
+		} else if n < msg.len {
+			log.Printf("connrx(term): short read %d expected %d", n, msg.len)
+			bufpool <- msg // return the message
 			return
 		}
 
 		// Send the packet to the rx channel
-		rxchan <- packet
+		rxchan <- msg
 	}
 }
 
-func conntx(txchan <-chan []byte, conn net.Conn, writeerr chan<- bool, wait *sync.WaitGroup) {
+func conntx(txchan <-chan *message, conn net.Conn, writeerr chan<- bool, wait *sync.WaitGroup, bufpool chan<- *message) {
 	// Signal shutdown waitgroup that we're done
 	defer wait.Done()
 
@@ -73,17 +88,18 @@ func conntx(txchan <-chan []byte, conn net.Conn, writeerr chan<- bool, wait *syn
 	failed := false
 
 	// Pump the transmit channel until it is closed
-	for buf := range txchan {
-		//log.Print("conntx: sending packet to client")
+	for msg := range txchan {
+		//log.Print("conntx: sending packet")
 
 		if !failed {
 			//TODO: Any processing on packet from tun adapter
 
-			// Write packet (already contains header from tunrx)
+			// Write packet
+			buf := msg.wirepacket()
 			n, err := conn.Write(buf)
 			//log.Printf("conntx: wrote %d bytes", n)
 			if err != nil {
-				log.Printf("conntx(term): error while writing packet: %s", err)
+				log.Printf("conntx(term): error while writing: %s", err)
 				// If the write errors, signal the rwerr channel
 				writeerr <- true
 				failed = true
@@ -92,11 +108,13 @@ func conntx(txchan <-chan []byte, conn net.Conn, writeerr chan<- bool, wait *syn
 				writeerr <- true
 				failed = true
 			}
+
+			bufpool <- msg
 		}
 	}
 }
 
-func tunrx(tun *water.Interface, rxchan chan<- []byte, wait *sync.WaitGroup) {
+func tunrx(tun *water.Interface, rxchan chan<- *message, wait *sync.WaitGroup, bufpool chan *message) {
 	// Close channel when read loop ends to signal end of traffic
 	// Used by client data router to know when to stop reading
 	defer close(rxchan)
@@ -106,39 +124,50 @@ func tunrx(tun *water.Interface, rxchan chan<- []byte, wait *sync.WaitGroup) {
 
 	for {
 		// Make room at the beginning for the packet length
-		tunbuf := make([]byte, MTU+4)
-		n, err := tun.Read(tunbuf[4:])
+		msg := <-bufpool
+		msg.len = MTU
+		n, err := tun.Read(msg.packet())
 
 		//log.Printf("tunrx: got %d byte packet", n)
 
 		if err != nil {
 			// Stop pumping if read returns error
 			log.Printf("tunrx(term): error reading %s", err)
+			bufpool <- msg // put the buffer back
 			return
 		}
 
+		msg.len = n
+
 		// Put the packet length at the beginning of the packet
-		binary.BigEndian.PutUint32(tunbuf, uint32(n))
-		rxchan <- tunbuf[:n+4]
+		binary.BigEndian.PutUint32(msg.wirepacket(), uint32(n))
+		rxchan <- msg
 	}
 }
 
-func tuntx(txchan <-chan []byte, tun *water.Interface, wait *sync.WaitGroup) {
+func tuntx(txchan <-chan *message, tun *water.Interface, wait *sync.WaitGroup, bufpool chan<- *message) {
 	defer wait.Done()
 
 	log.Print("tuntx: starting")
 
 	// Read the channel until it is closed
-	for tunbuf := range txchan {
+	for msg := range txchan {
+		//log.Printf("tuntx: got %d bytes to write", len(tunbuf))
 		// Write the buffer to the tun interface
-		n, err := tun.Write(tunbuf)
+		n, err := tun.Write(msg.packet())
+
+		if n != msg.len {
+			// Stop pumping if read returns error
+			log.Printf("tuntx(term): short write %d of %d", n, msg.len)
+			bufpool <- msg
+			return
+		}
+
+		bufpool <- msg
+
 		//log.Printf("tuntx: wrote %d bytes", n)
 		if err != nil {
 			log.Printf("tuntx(term): error writing %s", err)
-			return
-		} else if n != len(tunbuf) {
-			// Stop pumping if read returns error
-			log.Printf("tuntx(term): short write %d of %d", n, len(tunbuf))
 			return
 		}
 	}

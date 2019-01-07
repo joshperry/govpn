@@ -15,9 +15,8 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-func service(tlscon *tls.Conn, tunrxchan <-chan []byte, tuntxchan chan<- []byte, done chan bool, wait *sync.WaitGroup) {
+func service(tlscon *tls.Conn, tunrxchan <-chan *message, rxbufpool chan<- *message, tuntxchan chan<- *message, txbufpool chan *message, done chan bool, wait *sync.WaitGroup) {
 	defer tlscon.Close()
-	defer close(tuntxchan)
 
 	if err := tlscon.Handshake(); nil != err {
 		log.Printf("client(term): tls handshake failed: %s", err)
@@ -103,63 +102,46 @@ func service(tlscon *tls.Conn, tunrxchan <-chan []byte, tuntxchan chan<- []byte,
 		tunlink, _ := netlink.LinkByName("tun_govpnc")
 		ipnet, _ := netlink.ParseAddr(settings.IP + "/21")
 		netlink.AddrAdd(tunlink, ipnet)
-		nlhand.LinkSetMTU(tunlink, 1300)
+		nlhand.LinkSetMTU(tunlink, MTU)
 		nlhand.LinkSetUp(tunlink)
 
 		// Disable ipv6 on tun interface
 		err = sysctl.Set("net.ipv6.conf.tun_govpnc.disable_ipv6", "1")
 	}
 
+	// A channel to signal a write error to the server
+	readerr := make(chan bool)
+
 	// Channel for packets coming from the server
 	// Exits when the read fails
 	wait.Add(1)
-	rx := make(chan []byte)
-	go connrx(bufrx, rx, wait)
+	go connrx(bufrx, tuntxchan, readerr, wait, txbufpool)
 
 	// A channel to signal a write error to the server
-	writeerr := make(chan bool, 2)
+	writeerr := make(chan bool)
 
 	// Channel for packets bound to the server
-	// Exits when tunrx pump closes
+	// Exits when tunrx pump closes or done is closed
 	wait.Add(1)
-	tx := make(chan []byte)
-	go conntx(tx, tlscon, writeerr, wait)
+	go conntx(tunrxchan, tlscon, writeerr, done, wait, rxbufpool)
 
-	// Pump packets from the tun interface into the client tx channel
-	// Exits when done is signaled
-	go func() {
-		defer close(tx)
-
-		for {
-			select {
-			case packet := <-tunrxchan:
-				tx <- packet
-			case <-done:
-				return
-			}
-		}
-	}()
-
-	// Block waiting for a signal, an error, or server packets to deliver
+	// Block waiting for a signal, or an error
 	for {
 		select {
 		case <-done:
-			log.Println("client(term): done signaled")
+			log.Println("client(term): done closed")
 			return
 
 		case <-writeerr:
-			log.Println("client(term): error writing")
+			log.Println("client(term): error writing to server")
 			close(done)
 			return
 
-		case packet, ok := <-rx:
-			if !ok {
-				log.Print("client(term): rx channel closed")
-				close(done)
-				return
-			}
+		case <-readerr:
+			log.Println("client(term): error reading from server")
+			close(done)
+			return
 
-			tuntxchan <- packet
 		}
 	}
 }
