@@ -40,11 +40,11 @@ func contrack(subchan chan<- ClientStateSub, reportchan <-chan chan<- Connection
 					if (other.disconnected == time.Time{}) {
 						// Only send if it isn't disconnected already
 						contrack_enforcedmetric.Inc()
-						log.Printf("server: contrack: enforce disconnect on %s-%#X", other.name, other.id)
+						log.Printf("server: contrack: enforce disconnect on %s-%#x", other.name, other.id)
 						//TODO: close(other.control)
 					}
 					// Save the disconnecting client into the deltrack list to await its final goodbye
-					log.Printf("server: contrack: saving to deltrack %s-%#X", other.name, other.id)
+					log.Printf("server: contrack: saving to deltrack %s-%#x", other.name, other.id)
 					deltrack[other.id] = other
 
 					delcount.Inc()
@@ -52,13 +52,13 @@ func contrack(subchan chan<- ClientStateSub, reportchan <-chan chan<- Connection
 					opencount.Inc()
 				}
 
-				log.Printf("server: contrack: tracking %s-%#X", state.client.name, state.client.id)
+				log.Printf("server: contrack: tracking %s-%#x", state.client.name, state.client.id)
 				contrack[state.client.name] = state.client
 
 			} else if state.transition == Disconnect {
 				// When a client disconnects reap the client lists
 				if _, ok := deltrack[state.client.id]; ok {
-					log.Printf("server: contrack: deltrack closed %s-%#X", state.client.name, state.client.id)
+					log.Printf("server: contrack: deltrack closed %s-%#x", state.client.name, state.client.id)
 					// If we are already waiting for disconnection
 					// just remove it from the deltrack list
 					delete(deltrack, state.client.id)
@@ -68,12 +68,12 @@ func contrack(subchan chan<- ClientStateSub, reportchan <-chan chan<- Connection
 					// If there is an existing contrack entry
 					if client, ok := contrack[state.client.name]; ok && client.id == state.client.id {
 						// With the same connection id
-						log.Printf("server: contrack: closed last open for %s-%#X", state.client.name, state.client.id)
+						log.Printf("server: contrack: closed last open for %s-%#x", state.client.name, state.client.id)
 						// Remove the client from the connection tracking list
 						delete(contrack, state.client.name)
 						opencount.Dec()
 					} else {
-						log.Printf("server: contrack(perm): got disconnect with zero tracking matches %s-%#X", state.client.name, state.client.id)
+						log.Printf("server: contrack(perm): got disconnect with zero tracking matches %s-%#x", state.client.name, state.client.id)
 						panic("zero tracking matches")
 					}
 				}

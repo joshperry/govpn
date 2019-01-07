@@ -49,11 +49,11 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- *message, txbufpool chan *me
 
 	pid := &id
 	cprint := func(s interface{}) {
-		log.Printf("server: conn(%#X): %s", uint64(*pid), s)
+		log.Printf("server: conn(%#x): %s", uint64(*pid), s)
 	}
 
 	cprintf := func(s string, args ...interface{}) {
-		log.Printf("server: conn(%#X): %s", uint64(*pid), fmt.Sprintf(s, args...))
+		log.Printf("server: conn(%#x): %s", uint64(*pid), fmt.Sprintf(s, args...))
 	}
 
 	cprint("starting")
@@ -79,19 +79,20 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- *message, txbufpool chan *me
 	if err != nil {
 		nocertfail.Inc()
 		cprintf("(term): error validating client: %s", err)
-		//TODO: Send HTTP 403 response
-		//tlscon.Write()
+
+		//Send HTTP 403 response
+		conn.Write([]byte("HTTP/1.0 403 FORBIDDEN\n\n"))
 		return
 	}
 	client.id = id
-
-	// Create buffered reader for connection
-	bufrx := bufio.NewReader(conn)
 
 	// Application-Layer Handshake
 	// Read first packet from client
 	// This is ugly because we're not in channel-land yet
 	{
+		// Create buffered reader for connection
+		bufrx := bufio.NewReader(conn)
+
 		// Get headers
 		tp := textproto.NewReader(bufrx)
 		request, err := tp.ReadLine()
@@ -133,10 +134,6 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- *message, txbufpool chan *me
 			return
 		}
 
-		if bufrx.Buffered() != 0 {
-			panic("Didn't read all buffered bytes")
-		}
-
 		// TODO: Validate client info
 
 		// Allocate client IP address
@@ -170,6 +167,12 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- *message, txbufpool chan *me
 			cprintf("(term): error sending client settings: %s", err)
 			return
 		}
+		cprint(string(settingsbuf))
+
+		// Ensure the buffered reader isn't holding extra data
+		if bufrx.Buffered() != 0 {
+			panic("Didn't read all buffered bytes")
+		}
 	}
 
 	// Increment connect count metric here
@@ -182,7 +185,7 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- *message, txbufpool chan *me
 	// Exits on failing read after deferred conn.Close() or zero-length read from client close
 	s.clientGroup.Add(1)
 	clientrx := make(chan *message)
-	go connrx(bufrx, clientrx, s.clientGroup, txbufpool)
+	go connrx(conn, clientrx, s.clientGroup, txbufpool)
 
 	// A channel to signal a write error to the client
 	writeerr := make(chan bool, 2)

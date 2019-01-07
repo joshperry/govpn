@@ -24,14 +24,14 @@ func service(tlscon *tls.Conn, tunrxchan <-chan *message, rxbufpool chan<- *mess
 		log.Print("client: tls handshake succeeded")
 	}
 
-	// Create buffered reader for connection
-	bufrx := bufio.NewReader(tlscon)
-
 	// Settings we get back from the server
 	var settings ClientSettings
 
 	// Application layer handshake
 	{
+		// Create buffered reader for connection
+		bufrx := bufio.NewReader(tlscon)
+
 		// Encode client settings struct to newline delimited json and send as first packet
 		infobuf, err := json.Marshal(ClientInfo{
 			Time:    time.Now().UTC().Format(time.RFC3339),
@@ -90,10 +90,6 @@ func service(tlscon *tls.Conn, tunrxchan <-chan *message, rxbufpool chan<- *mess
 			return
 		}
 
-		if bufrx.Buffered() != 0 {
-			panic("Didn't read all buffered bytes")
-		}
-
 		// TODO: Set tun adapter IP address and state
 
 		// Set tun adapter settings and turn it up
@@ -107,6 +103,11 @@ func service(tlscon *tls.Conn, tunrxchan <-chan *message, rxbufpool chan<- *mess
 
 		// Disable ipv6 on tun interface
 		err = sysctl.Set("net.ipv6.conf.tun_govpnc.disable_ipv6", "1")
+
+		// Ensure the buffered reader doesn't hold further data
+		if bufrx.Buffered() != 0 {
+			panic("Didn't read all buffered bytes")
+		}
 	}
 
 	// A channel to signal a write error to the server
@@ -115,7 +116,7 @@ func service(tlscon *tls.Conn, tunrxchan <-chan *message, rxbufpool chan<- *mess
 	// Channel for packets coming from the server
 	// Exits when the read fails
 	wait.Add(1)
-	go connrx(bufrx, tuntxchan, readerr, wait, txbufpool)
+	go connrx(tlscon, tuntxchan, readerr, wait, txbufpool)
 
 	// A channel to signal a write error to the server
 	writeerr := make(chan bool)

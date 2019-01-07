@@ -42,11 +42,11 @@ func route(rxchan <-chan *message, subchan chan<- ClientStateSub, bufpool chan<-
 			// uint32 keys are used for the route map
 			ipint := ip2int(state.client.ip)
 			if state.transition == Connect {
-				log.Printf("server: route: got client connect %s %s-%#X", state.client.ip, state.client.name, state.client.id)
+				log.Printf("server: route: got client connect %s %s-%#x", state.client.ip, state.client.name, state.client.id)
 				// Add an item to the routing table
 				routes[ipint] = state.client.tx
 			} else if state.transition == Disconnect {
-				log.Printf("server: route: got client disconnect %s %s-%#X", state.client.ip, state.client.name, state.client.id)
+				log.Printf("server: route: got client disconnect %s %s-%#x", state.client.ip, state.client.name, state.client.id)
 				// Remove the client from the routing table and then close the client tx channel
 				// Once the disconnect message is recieved, the client handler has exited
 				if tx, ok := routes[ipint]; ok {
@@ -55,7 +55,7 @@ func route(rxchan <-chan *message, subchan chan<- ClientStateSub, bufpool chan<-
 					close(tx)
 				} else {
 					// Didn't find a connection in the routes for this client... shouldn't happen
-					log.Printf("server: route(perm): close no open connection %s %s-%#X", state.client.ip, state.client.name, state.client.id)
+					log.Printf("server: route(perm): close no open connection %s %s-%#x", state.client.ip, state.client.name, state.client.id)
 					panic("close no open connection")
 				}
 			} else {

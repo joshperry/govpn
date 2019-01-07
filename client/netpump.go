@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/binary"
 	"log"
 	"net"
@@ -23,7 +22,7 @@ func (msg *message) wirepacket() []byte {
 	return msg.buf[:msg.len+4]
 }
 
-func connrx(rdr *bufio.Reader, rxchan chan<- *message, readerr chan<- bool, wait *sync.WaitGroup, bufpool chan *message) {
+func connrx(rdr net.Conn, rxchan chan<- *message, readerr chan<- bool, wait *sync.WaitGroup, bufpool chan *message) {
 	// Leave the wait group when the read pump exits
 	defer wait.Done()
 	defer func() {
