@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/binary"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -12,7 +13,7 @@ import (
 // then written to the client matching that address found in the routing table
 // Internal routing table is kept in sync by reading events from the statechan channel
 // Exits when statechan or rxchan are closed
-func route(rxchan <-chan *message, subchan chan<- ClientStateSub, bufpool chan<- *message) {
+func route(rxchan <-chan *message, subchan chan<- ClientStateSub, bufpool *sync.Pool) {
 
 	log.Print("server: router: starting")
 
@@ -68,7 +69,7 @@ func route(rxchan <-chan *message, subchan chan<- ClientStateSub, bufpool chan<-
 		case msg, ok := <-rxchan:
 			if !ok { // If the receive channel is closed, exit the loop
 				log.Print("server: route(term): rxchan closed")
-				bufpool <- msg // return message to pool
+				bufpool.Put(msg) // return message to pool
 				return
 			}
 			start := time.Now()
@@ -85,7 +86,7 @@ func route(rxchan <-chan *message, subchan chan<- ClientStateSub, bufpool chan<-
 			} else {
 				//TODO: Send ICMP unreachable if no client found
 				log.Printf("server: route: found no client for %d byte tun packet to %s", msg.len, int2ip(clientip))
-				bufpool <- msg // return message to pool
+				bufpool.Put(msg) // return message to pool
 				// TODO: metricize this
 			}
 

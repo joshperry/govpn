@@ -1,10 +1,11 @@
-net:
-  tunname: tun_govpn
+tun:
+  name: tun_govpn
+listen:
   address: 0.0.0.0
   port: 443
 tls:
   cert: server.crt
   key: server.key
   ca: ca.pem
-client:
-  netblock: 192.168.1.1/21
+secnet:
+  block: 192.168.1.1/21

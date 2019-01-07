@@ -15,7 +15,7 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-func service(tlscon *tls.Conn, tunrxchan <-chan *message, rxbufpool chan<- *message, tuntxchan chan<- *message, txbufpool chan *message, done chan bool, wait *sync.WaitGroup) {
+func service(tlscon *tls.Conn, tunrxchan <-chan *message, tuntxchan chan<- *message, bufpool *sync.Pool, done chan bool, wait *sync.WaitGroup) {
 	defer tlscon.Close()
 
 	if err := tlscon.Handshake(); nil != err {
@@ -116,7 +116,7 @@ func service(tlscon *tls.Conn, tunrxchan <-chan *message, rxbufpool chan<- *mess
 	// Channel for packets coming from the server
 	// Exits when the read fails
 	wait.Add(1)
-	go connrx(tlscon, tuntxchan, readerr, wait, txbufpool)
+	go connrx(tlscon, tuntxchan, readerr, wait, bufpool)
 
 	// A channel to signal a write error to the server
 	writeerr := make(chan bool)
@@ -124,7 +124,7 @@ func service(tlscon *tls.Conn, tunrxchan <-chan *message, rxbufpool chan<- *mess
 	// Channel for packets bound to the server
 	// Exits when tunrx pump closes or done is closed
 	wait.Add(1)
-	go conntx(tunrxchan, tlscon, writeerr, done, wait, rxbufpool)
+	go conntx(tunrxchan, tlscon, writeerr, done, wait, bufpool)
 
 	// Block waiting for a signal, or an error
 	for {

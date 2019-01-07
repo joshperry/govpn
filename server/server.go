@@ -53,7 +53,7 @@ func main() {
 		// override file with env
 		env.NewSource(env.WithStrippedPrefix("GOVPN")),
 		// override env with flags
-		flag.NewSource(flag.IncludeUnset(true)),
+		flag.NewSource(),
 	)
 
 	// Load the server's PKI keypair
@@ -90,12 +90,12 @@ func main() {
 	tlsconfig.BuildNameToCertificate()
 
 	// Parse the server address block
-	servernet, _ := netlink.ParseAddr(config.Get("client", "netblock").String("192.168.0.1/21"))
+	servernet, _ := netlink.ParseAddr(config.Get("secnet", "netblock").String("192.168.0.1/21"))
 	servernet.IP = int2ip(ip2int(servernet.IP.Mask(servernet.Mask)) + 1) // Set IP to first in the network
 
 	// Create tun interface
 	tunconfig := water.Config{DeviceType: water.TUN}
-	tunconfig.Name = config.Get("net", "tunname").String("tun_govpn")
+	tunconfig.Name = config.Get("tun", "name").String("tun_govpn")
 	iface, err := water.New(tunconfig)
 	if nil != err {
 		log.Fatalln("server: unable to allocate TUN interface:", err)
@@ -115,37 +115,35 @@ func main() {
 	// Waitgroup for waiting on main services to stop
 	mainwait := &sync.WaitGroup{}
 
+	// Create pool of messages
+	bufpool := sync.Pool{
+		New: func() interface{} {
+			return &message{}
+		},
+	}
+
 	// Producer that reads packets off of the tun interface and pushes them on the tunrx channel
 	// Packets put on the tunrx channel are read by the data router that decides where to send them
 	// If this stops pumping then client handler writes to the tuntx channel will stall
+	tunrxchan := make(chan *message)
 	// TODO: Read does not end when tun interface is closed, hacking to let process termination close this routine, remember to uncomment wait.Done in tunrx impl
 	//mainwait.Add(1) // hacked out because read does not end (see above todo), process termination does
-	rxbufpool := make(chan *message, 10)
-	for i := 0; i < cap(rxbufpool); i++ {
-		rxbufpool <- &message{}
-	}
-	tunrxchan := make(chan *message)
-	go tunrx(iface, tunrxchan, mainwait, rxbufpool)
+	go tunrx(iface, tunrxchan, mainwait, &bufpool)
 
 	// Consumer that reads packets off of the tuntx channel and writes them to the tun interface
-	// Any packet received on the client tls socket is written to the tuntx channel by a goroutine in `serve()`
+	// Any packet received on the client tlsclient socket is written to the tuntx channel by a goroutine in `serve()`
 	// Exits when txchan is closed
-	txbufpool := make(chan *message, 10)
-	for i := 0; i < cap(txbufpool); i++ {
-		txbufpool <- &message{}
-	}
 	tuntxchan := make(chan *message)
 	mainwait.Add(1)
-	go tuntx(tuntxchan, iface, mainwait, txbufpool)
+	go tuntx(tuntxchan, iface, mainwait, &bufpool)
 
-	// Listen on tcp:443
-	// TODO: Get from config
+	// Listen for clients
 	listener, err := tls.Listen(
 		"tcp",
 		fmt.Sprintf(
 			"%s:%d",
-			config.Get("net", "address").String("0.0.0.0"),
-			config.Get("net", "port").Int(443),
+			config.Get("listen", "address").String("0.0.0.0"),
+			config.Get("listen", "port").Int(443),
 		),
 		tlsconfig,
 	)
@@ -157,7 +155,7 @@ func main() {
 	// Create an instance of the VPN server service
 	// Run it 5 times with the active listener to accept connections, tun channels for tun comms, and server network info
 	service := NewService()
-	go service.Serve(listener, tuntxchan, txbufpool, tunrxchan, rxbufpool, servernet.IPNet)
+	go service.Serve(listener, tuntxchan, tunrxchan, &bufpool, servernet.IPNet)
 
 	// Handle SIGINT and SIGTERM
 	sigs := make(chan os.Signal)

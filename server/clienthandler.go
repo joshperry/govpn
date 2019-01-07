@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/textproto"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -29,7 +30,7 @@ type ClientSettings struct {
 }
 
 // Client handler function for :443
-func (s *Service) serve(conn net.Conn, tuntx chan<- *message, txbufpool chan *message, rxbufpool chan<- *message, clientstate chan<- ClientState, netblock <-chan net.IP) {
+func (s *Service) serve(conn net.Conn, tuntx chan<- *message, bufpool *sync.Pool, clientstate chan<- ClientState, netblock <-chan net.IP) {
 	// Leave the shutdown group when handler exits
 	defer s.clientGroup.Done()
 
@@ -185,7 +186,7 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- *message, txbufpool chan *me
 	// Exits on failing read after deferred conn.Close() or zero-length read from client close
 	s.clientGroup.Add(1)
 	clientrx := make(chan *message)
-	go connrx(conn, clientrx, s.clientGroup, txbufpool)
+	go connrx(conn, clientrx, s.clientGroup, bufpool)
 
 	// A channel to signal a write error to the client
 	writeerr := make(chan bool, 2)
@@ -194,7 +195,7 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- *message, txbufpool chan *me
 	// This needs to continue pumping until the txchan is closed or the router could stall
 	// Exits after `close(client.tx)` by router
 	s.clientGroup.Add(1)
-	go conntx(client.tx, conn, writeerr, s.clientGroup, rxbufpool)
+	go conntx(client.tx, conn, writeerr, s.clientGroup, bufpool)
 
 	// Defer client cleanup to when leaving the handler
 	defer func() {
@@ -231,7 +232,7 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- *message, txbufpool chan *me
 			// Drop any packets with a source address different than the one allocated to the client
 			if srcip != client.intip {
 				cprintf("dropped bogon %s", int2ip(srcip))
-				txbufpool <- msg // put message back in pool
+				bufpool.Put(msg) // put message back in pool
 				continue
 			}
 

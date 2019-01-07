@@ -22,7 +22,7 @@ func (msg *message) wirepacket() []byte {
 	return msg.buf[:msg.len+4]
 }
 
-func connrx(rdr net.Conn, rxchan chan<- *message, wait *sync.WaitGroup, bufpool chan *message) {
+func connrx(rdr net.Conn, rxchan chan<- *message, wait *sync.WaitGroup, bufpool *sync.Pool) {
 	// Leave the wait group when the read pump exits
 	defer wait.Done()
 	defer func() {
@@ -55,7 +55,7 @@ func connrx(rdr net.Conn, rxchan chan<- *message, wait *sync.WaitGroup, bufpool 
 			return
 		}
 
-		msg := <-bufpool
+		msg := bufpool.Get().(*message)
 		msg.len = int(packetlen)
 
 		// Read packet
@@ -64,11 +64,11 @@ func connrx(rdr net.Conn, rxchan chan<- *message, wait *sync.WaitGroup, bufpool 
 		if nil != err {
 			// Read failed, pumpexit the handler
 			log.Printf("connrx(term): error while reading packet: %s", err)
-			bufpool <- msg // return the message
+			bufpool.Put(msg) // return the message
 			return
 		} else if n < msg.len {
 			log.Printf("connrx(term): short read %d expected %d", n, msg.len)
-			bufpool <- msg // return the message
+			bufpool.Put(msg) // return the message
 			return
 		}
 
@@ -77,7 +77,7 @@ func connrx(rdr net.Conn, rxchan chan<- *message, wait *sync.WaitGroup, bufpool 
 	}
 }
 
-func conntx(txchan <-chan *message, conn net.Conn, writeerr chan<- bool, wait *sync.WaitGroup, bufpool chan<- *message) {
+func conntx(txchan <-chan *message, conn net.Conn, writeerr chan<- bool, wait *sync.WaitGroup, bufpool *sync.Pool) {
 	// Signal shutdown waitgroup that we're done
 	defer wait.Done()
 
@@ -108,12 +108,12 @@ func conntx(txchan <-chan *message, conn net.Conn, writeerr chan<- bool, wait *s
 				failed = true
 			}
 
-			bufpool <- msg
+			bufpool.Put(msg)
 		}
 	}
 }
 
-func tunrx(tun *water.Interface, rxchan chan<- *message, wait *sync.WaitGroup, bufpool chan *message) {
+func tunrx(tun *water.Interface, rxchan chan<- *message, wait *sync.WaitGroup, bufpool *sync.Pool) {
 	// Close channel when read loop ends to signal end of traffic
 	// Used by client data router to know when to stop reading
 	defer close(rxchan)
@@ -123,7 +123,7 @@ func tunrx(tun *water.Interface, rxchan chan<- *message, wait *sync.WaitGroup, b
 
 	for {
 		// Make room at the beginning for the packet length
-		msg := <-bufpool
+		msg := bufpool.Get().(*message)
 		msg.len = MTU
 		n, err := tun.Read(msg.packet())
 
@@ -132,7 +132,7 @@ func tunrx(tun *water.Interface, rxchan chan<- *message, wait *sync.WaitGroup, b
 		if err != nil {
 			// Stop pumping if read returns error
 			log.Printf("tunrx(term): error reading %s", err)
-			bufpool <- msg // put the buffer back
+			bufpool.Put(msg) // put the buffer back
 			return
 		}
 
@@ -144,7 +144,7 @@ func tunrx(tun *water.Interface, rxchan chan<- *message, wait *sync.WaitGroup, b
 	}
 }
 
-func tuntx(txchan <-chan *message, tun *water.Interface, wait *sync.WaitGroup, bufpool chan<- *message) {
+func tuntx(txchan <-chan *message, tun *water.Interface, wait *sync.WaitGroup, bufpool *sync.Pool) {
 	defer wait.Done()
 
 	log.Print("tuntx: starting")
@@ -158,11 +158,11 @@ func tuntx(txchan <-chan *message, tun *water.Interface, wait *sync.WaitGroup, b
 		if n != msg.len {
 			// Stop pumping if read returns error
 			log.Printf("tuntx(term): short write %d of %d", n, msg.len)
-			bufpool <- msg
+			bufpool.Put(msg)
 			return
 		}
 
-		bufpool <- msg
+		bufpool.Put(msg)
 
 		//log.Printf("tuntx: wrote %d bytes", n)
 		if err != nil {
