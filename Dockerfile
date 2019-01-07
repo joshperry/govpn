@@ -17,5 +17,5 @@ WORKDIR /usr/src/app
 COPY --from=builder /usr/src/app/server/server /usr/local/bin/server
 COPY --from=builder /usr/src/app/client/client /usr/local/bin/client
 
-COPY ./client/client.crt ./client/client.key ./server/server.crt ./server/server.key ./client/ca.pem ./
+COPY ./server/server-config.yaml ./client/client.crt ./client/client.key ./server/server.crt ./server/server.key ./client/ca.pem ./
 

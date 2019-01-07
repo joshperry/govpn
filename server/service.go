@@ -75,8 +75,8 @@ func (s *Service) Serve(listener net.Listener, tuntx chan<- *message, txbufpool 
 	// And returns IPs to the pool when a client disconnects
 	// Set the buffer size to the host count - 3 (network address, server address, and broadcast address)
 	// Exits when netblockstate is closed
-	netblock := make(chan net.IP)
-	go runblock(netblock, statesub, hostcount, ip2int(servernet.IP))
+	netblock := make(chan net.IP, hostcount-3)
+	go runblock(netblock, statesub, ip2int(servernet.IP))
 
 	// Channel to request contrack reports
 	reportchan := make(chan chan<- Connections)
