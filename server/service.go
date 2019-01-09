@@ -1,12 +1,17 @@
 package main
 
 import (
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"log"
 	"math"
 	"net"
 	"sync"
 	"time"
+
+	"github.com/micro/go-config"
+	"github.com/songgao/water"
 )
 
 // The VPN server service
@@ -55,17 +60,65 @@ func (c Connection) MarshalJSON() ([]byte, error) {
 // Stop listening if anything is received on the done channel.
 // tuntx: channel to write packets from the client to the tun adapter
 // tunrx: channel to read packets for the clients from the tun adapter
-func (s *Service) Serve(listener net.Listener, tuntx chan<- *message, tunrx <-chan *message, bufpool *sync.Pool, servernet *net.IPNet) {
+func (s *Service) Serve(listener net.Listener, tun *water.Interface, bufpool *sync.Pool, servernet *net.IPNet) {
 	defer s.shutdownGroup.Done()
 	// Close the listener when the server stops
 	defer listener.Close()
 
+	routecache := newRouteCache()
 	statesub := make(chan ClientStateSub)
 
-	// Route packets bound for clients as they come in the tunrx channel
-	// Uses clientstate channel to keep internal routing table up to date
-	// Exits when tunrx or clientstate channels are closed
-	go route(tunrx, statesub, bufpool)
+	// Keeps the route info updated from the client state chan
+	go route(routecache, statesub)
+
+	rxstack := filterstack{
+		// Router logic
+		func(msg *message, stack filterstack) error {
+			// Get destination IP from packet
+			clientip := binary.BigEndian.Uint32(msg.packet[16:20])
+
+			// Get the client route
+			lock := routecache.RLock() // read lock
+			clientstack, ok := routecache.routes[clientip]
+			lock.Unlock()
+
+			// Record metrics
+			//tx_packetsmetric.Inc()
+			//tx_bytesmetric.Add(float64(msg.len))
+
+			// Send the message to the client stack
+			if ok {
+				return clientstack.next(msg)
+			} else {
+				return errors.New("no client route found")
+			}
+		},
+	}
+
+	for _ = range [20]int{} {
+		//s.clientGroup.Add(1) // hacked out because read does not end (see above todo), process termination does
+		go tunrx(tun, rxstack, s.clientGroup, bufpool)
+	}
+
+	// Start up multiple readers with separate queues
+	for _ = range [7]int{} {
+		tunconfig := water.Config{DeviceType: water.TUN, PlatformSpecificParams: water.PlatformSpecificParams{MultiQueue: true}}
+		tunconfig.Name = config.Get("tun", "name").String("tun_govpn")
+		iface, err := water.New(tunconfig)
+		if nil != err {
+			log.Fatalln("server: unable to allocate TUN interface:", err)
+		}
+		defer iface.Close()
+
+		// Multiple pumps per tun queue
+		for _ = range [20]int{} {
+			// Producer that reads packets off of the tun interface delivers them to the appropriate client
+			// Packet source IP is used to query the route cache to find the client
+			// TODO: Read does not end when tun interface is closed, hacking to let process termination close this routine, remember to uncomment wait.Done in tunrx impl
+			//s.clientGroup.Add(1) // hacked out because read does not end (see above todo), process termination does
+			go tunrx(iface, rxstack, s.clientGroup, bufpool)
+		}
+	}
 
 	// Calculate netblock info
 	netmasklen, networksize := servernet.Mask.Size()
@@ -104,6 +157,9 @@ func (s *Service) Serve(listener net.Listener, tuntx chan<- *message, tunrx <-ch
 	// Start metrics http server
 	go metrics(reportchan)
 
+	// Set up the tx filter stack
+	txstack := filterstack{tuntx(tun)}
+
 	// Forever select on the done channel, and the client connection handler channel
 	for {
 		select {
@@ -128,7 +184,7 @@ func (s *Service) Serve(listener net.Listener, tuntx chan<- *message, tunrx <-ch
 			log.Printf("server: %s connected", conn.RemoteAddr())
 			// Add a client to the waitgroup, and handle it in a goroutine
 			s.clientGroup.Add(1)
-			go s.serve(conn, tuntx, bufpool, clientstate, netblock)
+			go s.serve(conn, txstack, bufpool, clientstate, netblock)
 			acceptedmetric.Inc()
 		}
 	}

@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -10,26 +12,36 @@ import (
 )
 
 type message struct {
-	buf [MTU + 4]byte
-	len int
+	buf        [MTU + 4]byte
+	packet     []byte
+	wirepacket []byte
+	len        int
 }
 
-func (msg *message) packet() []byte {
-	return msg.buf[4 : msg.len+4]
+func (msg *message) set(n int) {
+	if n != msg.len {
+		msg.len = n
+		msg.packet = msg.buf[4 : msg.len+4]
+		msg.wirepacket = msg.buf[:msg.len+4]
+		binary.BigEndian.PutUint32(msg.wirepacket, uint32(msg.len))
+	}
 }
 
-func (msg *message) wirepacket() []byte {
-	return msg.buf[:msg.len+4]
+type filterfunc func(*message, filterstack) error
+
+type filterstack []filterfunc
+
+func (stack filterstack) next(msg *message) error {
+	return stack[0](msg, stack[1:])
 }
 
-func connrx(rdr net.Conn, rxchan chan<- *message, readerr chan<- bool, wait *sync.WaitGroup, bufpool *sync.Pool) {
+func connrx(rdr net.Conn, txstack filterstack, readerr chan<- bool, wait *sync.WaitGroup, bufpool *sync.Pool) {
 	// Leave the wait group when the read pump exits
 	defer wait.Done()
 	defer func() {
 		log.Print("connrx: closing rxchan")
-		close(rxchan)
+		close(readerr)
 	}()
-	defer close(readerr)
 
 	log.Print("connrx: starting")
 
@@ -57,77 +69,54 @@ func connrx(rdr net.Conn, rxchan chan<- *message, readerr chan<- bool, wait *syn
 		}
 
 		msg := bufpool.Get().(*message)
-		msg.len = int(packetlen)
+		msg.set(int(packetlen))
+
+		fatal := func(logmsg string, err error) {
+			log.Printf("connrx(term): %s %s", logmsg, err)
+			bufpool.Put(msg) // return the message
+		}
 
 		// Read packet
 		//log.Printf("connrx: reading %d byte packet", packetlen)
-		n, err = rdr.Read(msg.packet())
-		if nil != err {
+		if n, err = rdr.Read(msg.packet); nil != err {
 			// Read failed, pumpexit the handler
-			log.Printf("connrx(term): error while reading packet: %s", err)
-			bufpool.Put(msg) // return the message
+			fatal("error while reading packet", err)
 			return
 		} else if n < msg.len {
-			log.Print("connrx(term): short read")
-			bufpool.Put(msg) // return the message
+			fatal("", errors.New("short read"))
 			return
 		}
 
-		// Send the packet to the rx channel
-		rxchan <- msg
-	}
-}
-
-func conntx(txchan <-chan *message, conn net.Conn, writeerr chan<- bool, done <-chan bool, wait *sync.WaitGroup, bufpool *sync.Pool) {
-	// Signal shutdown waitgroup that we're done
-	defer wait.Done()
-
-	log.Print("conntx: starting")
-
-	// A simple one-shot flag is used to skip the write after failure
-	failed := false
-
-	// Pump the transmit channel until it is closed
-	for {
-		select {
-		case <-done:
-			log.Print("conntx(term): done closed")
+		// Send the packet to the tx stack
+		if err = txstack.next(msg); nil != err {
+			fatal("error running filterstack", err)
 			return
-		case msg, ok := <-txchan:
-			//log.Print("conntx: sending packet")
-			if !ok {
-				log.Print("conntx(term): txchan closed")
-				return
-			}
-
-			if !failed {
-				//TODO: Any processing on packet from tun adapter
-
-				// Write packet
-				buf := msg.wirepacket()
-				n, err := conn.Write(buf)
-				//log.Printf("conntx: wrote %d bytes", n)
-				if err != nil {
-					log.Printf("conntx(term): error while writing: %s", err)
-					// If the write errors, signal the rwerr channel
-					writeerr <- true
-					failed = true
-				} else if n < len(buf) {
-					log.Print("conntx(term): short write")
-					writeerr <- true
-					failed = true
-				}
-
-				bufpool.Put(msg)
-			}
 		}
+
+		// Put message back on pool
+		bufpool.Put(msg)
 	}
 }
 
-func tunrx(tun *water.Interface, rxchan chan<- *message, wait *sync.WaitGroup, bufpool *sync.Pool) {
-	// Close channel when read loop ends to signal end of traffic
-	// Used by client data router to know when to stop reading
-	defer close(rxchan)
+func conntx(conn net.Conn) filterfunc {
+	return func(msg *message, _ filterstack) (err error) {
+		//TODO: Any processing on packet from tun adapter
+
+		// Write packet
+		n, err := conn.Write(msg.wirepacket)
+		//log.Printf("conntx: wrote %d bytes", n)
+
+		if err != nil {
+			log.Printf("conntx(term): error while writing: %s", err)
+		} else if n < len(msg.wirepacket) {
+			err = errors.New("short write")
+		}
+
+		return
+	}
+}
+
+func tunrx(tun *water.Interface, txstack filterstack, wait *sync.WaitGroup, bufpool *sync.Pool) {
 	//defer wait.Done() // skipped for now since tun.Close() does not kill the sleepinig read, see tunrx callsite for more
 
 	log.Print("tunrx: starting")
@@ -135,8 +124,8 @@ func tunrx(tun *water.Interface, rxchan chan<- *message, wait *sync.WaitGroup, b
 	for {
 		// Make room at the beginning for the packet length
 		msg := bufpool.Get().(*message)
-		msg.len = MTU
-		n, err := tun.Read(msg.packet())
+		msg.set(MTU)
+		n, err := tun.Read(msg.packet)
 
 		//log.Printf("tunrx: got %d byte packet", n)
 
@@ -147,39 +136,34 @@ func tunrx(tun *water.Interface, rxchan chan<- *message, wait *sync.WaitGroup, b
 			return
 		}
 
-		msg.len = n
+		// Set message length
+		msg.set(n)
 
-		// Put the packet length at the beginning of the packet
-		binary.BigEndian.PutUint32(msg.wirepacket(), uint32(n))
-		rxchan <- msg
+		// Sent the message through the filter stack
+		err = txstack.next(msg)
+		if nil != err {
+			log.Printf("tunrx(term): error running stack: %s", err)
+		}
+
+		// Put message back on pool
+		bufpool.Put(msg)
 	}
 }
 
-func tuntx(txchan <-chan *message, tun *water.Interface, wait *sync.WaitGroup, bufpool *sync.Pool) {
-	defer wait.Done()
-
-	log.Print("tuntx: starting")
-
-	// Read the channel until it is closed
-	for msg := range txchan {
+func tuntx(tun *water.Interface) filterfunc {
+	return func(msg *message, _ filterstack) (err error) {
 		//log.Printf("tuntx: got %d bytes to write", len(tunbuf))
 		// Write the buffer to the tun interface
-		n, err := tun.Write(msg.packet())
-
-		if n != msg.len {
-			// Stop pumping if read returns error
-			log.Printf("tuntx(term): short write %d of %d", n, msg.len)
-			bufpool.Put(msg) // put the buffer back
-			return
-		}
-
-		bufpool.Put(msg) // put the buffer back
+		n, err := tun.Write(msg.packet)
 
 		//log.Printf("tuntx: wrote %d bytes", n)
-		if err != nil {
+		if n != msg.len {
+			// Stop pumping if read returns error
+			err = errors.New(fmt.Sprintf("short write %d of %d", n, msg.len))
+		} else if err != nil {
 			log.Printf("tuntx(term): error writing %s", err)
-			return
 		}
+
+		return
 	}
-	log.Print("tuntx(term): txchan closed")
 }

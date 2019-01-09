@@ -30,7 +30,7 @@ type ClientSettings struct {
 }
 
 // Client handler function for :443
-func (s *Service) serve(conn net.Conn, tuntx chan<- *message, bufpool *sync.Pool, clientstate chan<- ClientState, netblock <-chan net.IP) {
+func (s *Service) serve(conn net.Conn, txstack filterstack, bufpool *sync.Pool, clientstate chan<- ClientState, netblock <-chan net.IP) {
 	// Leave the shutdown group when handler exits
 	defer s.clientGroup.Done()
 
@@ -158,8 +158,7 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- *message, bufpool *sync.Pool
 		// Write http response and headers
 		conn.Write([]byte("HTTP/1.0 200 OK\n"))
 		conn.Write([]byte("Content-Type: application/json\n"))
-		conn.Write([]byte(fmt.Sprintf("Content-Length: %d\n", len(settingsbuf))))
-		conn.Write([]byte("\n"))
+		conn.Write([]byte(fmt.Sprintf("Content-Length: %d\n\n", len(settingsbuf))))
 
 		// Write the settings buffer
 		n, err = conn.Write(settingsbuf)
@@ -176,31 +175,13 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- *message, bufpool *sync.Pool
 		}
 	}
 
-	// Increment connect count metric here
-	client_connectmetric.Inc()
-	defer client_disconnectmetric.Inc()
-
 	// Enter channel-land! Ye blessed routine
-
-	// Producer that pumps the read-side of the client connection into the clientrx channel
-	// Exits on failing read after deferred conn.Close() or zero-length read from client close
-	s.clientGroup.Add(1)
-	clientrx := make(chan *message)
-	go connrx(conn, clientrx, s.clientGroup, bufpool)
-
-	// A channel to signal a write error to the client
-	writeerr := make(chan bool, 2)
-
-	// Pipe that pumps packets from the client rx channel into the client connection
-	// This needs to continue pumping until the txchan is closed or the router could stall
-	// Exits after `close(client.tx)` by router
-	s.clientGroup.Add(1)
-	go conntx(client.tx, conn, writeerr, s.clientGroup, bufpool)
 
 	// Defer client cleanup to when leaving the handler
 	defer func() {
 		// Record disconnect time in client
 		client.disconnected = time.Now()
+		client_disconnectmetric.Inc()
 
 		cprint("sending disconnect client state")
 
@@ -212,6 +193,9 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- *message, bufpool *sync.Pool
 		}
 	}()
 
+	// Increment connect count metric here
+	client_connectmetric.Inc()
+
 	// Send client connect state change
 	// This causes the client.tx channel to be mounted by the tun router and it will now receieve traffic
 	clientstate <- ClientState{
@@ -220,33 +204,44 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- *message, bufpool *sync.Pool
 		client:     client,
 	}
 
-	// Consumes packets from the clientrx channel then sends them into the tuntx channel
-	readerr := make(chan bool)
-	go func() {
-		for msg := range clientrx {
-			// Grab the packet srcip
-			srcip := binary.BigEndian.Uint32(msg.packet()[12:16])
+	// Add a client filter to the txstack
+	txstack = append(
+		filterstack{
+			// Ensure only messages valid for this client connection are accepted
+			func(msg *message, stack filterstack) error {
+				// Grab the packet source ip
+				srcip := binary.BigEndian.Uint32(msg.packet[12:16])
 
-			//cprintf("received packet %s", spew.Sdump(headers))
+				//cprintf("received packet %s", spew.Sdump(headers))
 
-			// Drop any packets with a source address different than the one allocated to the client
-			if srcip != client.intip {
-				cprintf("dropped bogon %s", int2ip(srcip))
-				bufpool.Put(msg) // put message back in pool
-				continue
-			}
+				// Drop any packets with a source address different than the one allocated to the client
+				if srcip != client.intip {
+					cprintf("dropped bogon %s", int2ip(srcip))
+					return nil
+				}
 
-			// Push the received packet to the tun tx channel
-			tuntx <- msg
+				//rx_packetsmetric.Inc()
+				//rx_bytesmetric.Add(float64(msg.len))
 
-			rx_packetsmetric.Inc()
-			rx_bytesmetric.Add(float64(msg.len))
-		}
-		cprint("(term): clientrx chan closed")
-		close(readerr)
-	}()
+				// Run the rest of the stack
+				return stack.next(msg)
+			},
+		},
+		txstack...,
+	)
 
-	cprint("entering main loop")
+	// Set up server->client filter stack
+	client.txstack = filterstack{conntx(conn)}
+
+	// A channel to signal a write error to the client
+	readerr := make(chan bool, 2)
+
+	// Producer that pumps the read-side of the client connection into the clientrx channel
+	// Exits on failing read after deferred conn.Close() or zero-length read from client close
+	s.clientGroup.Add(1)
+	go connrx(conn, txstack, readerr, s.clientGroup, bufpool)
+
+	cprint("client connection established")
 
 	// Forever select on the done channel, the rwerr channel, the clientrx read producer channel, and the control channel
 	// until a read or write operation fails, the done signal is received, or a control command terminates the connection
@@ -259,11 +254,6 @@ func (s *Service) serve(conn net.Conn, tuntx chan<- *message, bufpool *sync.Pool
 
 		case <-readerr:
 			cprint("(term): encountered client read error")
-			return
-
-		// Disconnect if we error writing to client
-		case <-writeerr:
-			cprint("(term): encountered client write error")
 			return
 
 		// Handle client control messages

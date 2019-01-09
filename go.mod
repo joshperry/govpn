@@ -8,6 +8,7 @@ require (
 	github.com/ghodss/yaml v1.0.0 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect
 	github.com/imdario/mergo v0.3.6 // indirect
+	github.com/jonhoo/drwmutex v0.0.0-20170710042535-8d084fc627fc
 	github.com/lorenzosaino/go-sysctl v0.1.0
 	github.com/micro/go-config v0.13.1
 	github.com/prometheus/client_golang v0.9.2
