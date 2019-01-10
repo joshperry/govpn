@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"crypto/tls"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -30,12 +29,14 @@ type ClientSettings struct {
 }
 
 // Client handler function for :443
-func (s *Service) serve(conn net.Conn, txstack filterstack, bufpool *sync.Pool, clientstate chan<- ClientState, netblock <-chan net.IP) {
-	// Leave the shutdown group when handler exits
-	defer s.clientGroup.Done()
-
-	// Close connection when handler exits
-	defer conn.Close()
+func (s *Service) serve(conn net.Conn, tun chan<- *message, clientstate chan<- ClientState, bufpool *sync.Pool, netblock <-chan net.IP) {
+	defer func() {
+		// Close connection when handler exits
+		conn.Close()
+		// Leave the shutdown group when handler exits
+		s.clientGroup.Done()
+		log.Print("client(perm): auf wiedersehen")
+	}()
 
 	// Metrics to track
 	tlsfail := client_failmetric.WithLabelValues("tls")
@@ -204,42 +205,16 @@ func (s *Service) serve(conn net.Conn, txstack filterstack, bufpool *sync.Pool, 
 		client:     client,
 	}
 
-	// Add a client filter to the txstack
-	txstack = append(
-		filterstack{
-			// Ensure only messages valid for this client connection are accepted
-			func(msg *message, stack filterstack) error {
-				// Grab the packet source ip
-				srcip := binary.BigEndian.Uint32(msg.packet[12:16])
-
-				//cprintf("received packet %s", spew.Sdump(headers))
-
-				// Drop any packets with a source address different than the one allocated to the client
-				if srcip != client.intip {
-					cprintf("dropped bogon %s", int2ip(srcip))
-					return nil
-				}
-
-				//rx_packetsmetric.Inc()
-				//rx_bytesmetric.Add(float64(msg.len))
-
-				// Run the rest of the stack
-				return stack.next(msg)
-			},
-		},
-		txstack...,
-	)
-
-	// Set up server->client filter stack
-	client.txstack = filterstack{conntx(conn)}
-
-	// A channel to signal a write error to the client
-	readerr := make(chan bool, 2)
-
-	// Producer that pumps the read-side of the client connection into the clientrx channel
-	// Exits on failing read after deferred conn.Close() or zero-length read from client close
+	// Producer that pumps the read-side of the client connection into the vpn tun adapter
+	// Exits on failing read after deferred conn.Close() or client disconnect
+	readerr := make(chan bool)
 	s.clientGroup.Add(1)
-	go connrx(conn, txstack, readerr, s.clientGroup, bufpool)
+	go connrx(conn, tun, client.intip, readerr, s.clientGroup, bufpool)
+
+	// Consumer that pumps messages from the router into the client connection
+	writeerr := make(chan bool)
+	s.clientGroup.Add(1)
+	go conntx(client.tx, conn, writeerr, s.clientGroup, bufpool)
 
 	cprint("client connection established")
 
@@ -254,6 +229,10 @@ func (s *Service) serve(conn net.Conn, txstack filterstack, bufpool *sync.Pool, 
 
 		case <-readerr:
 			cprint("(term): encountered client read error")
+			return
+
+		case <-writeerr:
+			cprint("(term): encountered client write error")
 			return
 
 		// Handle client control messages

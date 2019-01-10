@@ -67,7 +67,7 @@ func main() {
 	tlsconfig.BuildNameToCertificate()
 
 	// Create tun interface
-	tunconfig := water.Config{DeviceType: water.TUN}
+	tunconfig := water.Config{DeviceType: water.TUN, PlatformSpecificParams: water.PlatformSpecificParams{MultiQueue: true}}
 	tunconfig.Name = "tun_govpnc"
 	iface, err := water.New(tunconfig)
 	if nil != err {
@@ -104,8 +104,6 @@ func main() {
 		// Put the conntx filter at the end of the tunrx stack
 		tunrxstack := filterstack{conntx(tlscon)}
 
-		// Pump packets from the tun adapter into a channel
-		// mainwait.Add(1) // Not used for now because closing the tun interface doesn't break the read
 		go tunrx(iface, tunrxstack, mainwait, &bufpool)
 
 		// Handle SIGINT and SIGTERM
@@ -121,5 +119,7 @@ func main() {
 
 		log.Print("client: waiting for shutdown")
 		mainwait.Wait()
+	} else {
+		log.Print("client(term): client handshake failed")
 	}
 }

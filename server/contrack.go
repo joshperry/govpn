@@ -77,6 +77,9 @@ func contrack(subchan chan<- ClientStateSub, reportchan <-chan chan<- Connection
 						panic("zero tracking matches")
 					}
 				}
+
+				// Close the client channel so the send pump shuts down
+				close(state.client.tx)
 			} else {
 				log.Printf("server: contrack(perm): unhandled client transition: %d", state.transition)
 				panic("unhandled client state transition")

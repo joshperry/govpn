@@ -127,9 +127,6 @@ func main() {
 	}
 	log.Printf("server: listening on %s", listener.Addr().String())
 
-	// Waitgroup for waiting on main services to stop
-	mainwait := &sync.WaitGroup{}
-
 	// Create pool of messages
 	bufpool := sync.Pool{
 		New: func() interface{} {
@@ -147,17 +144,19 @@ func main() {
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
 	// Block waiting for a signal
-	log.Println(<-sigs)
-
-	// Stop the service and disconnect clients gracefully
-	log.Print("server: stopping")
-	service.Stop()
+	select {
+	case <-sigs:
+		// Stop the service and disconnect clients gracefully
+		log.Print("server(term): got shutdown signal")
+		service.Stop()
+	case <-service.done:
+		log.Print("server: saw done, waiting for shutdown")
+		service.shutdownGroup.Wait()
+	}
 
 	// Close the tun interface
 	log.Print("server: closing tun interface")
 	iface.Close()
 
-	// Wait for main pumps to stop
-	log.Print("server: waiting for main loops")
-	mainwait.Wait()
+	log.Print("server(perm): goodbye")
 }

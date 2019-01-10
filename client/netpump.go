@@ -18,13 +18,34 @@ type message struct {
 	len        int
 }
 
+func (msg *message) clr() {
+	msg.wirepacket = msg.buf[:]
+	msg.packet = msg.buf[4:]
+	msg.len = MTU
+}
+
 func (msg *message) set(n int) {
 	if n != msg.len {
 		msg.len = n
-		msg.packet = msg.buf[4 : msg.len+4]
 		msg.wirepacket = msg.buf[:msg.len+4]
+		msg.packet = msg.buf[4:]
 		binary.BigEndian.PutUint32(msg.wirepacket, uint32(msg.len))
 	}
+}
+
+func (msg *message) eset() error {
+	packetlen := int(binary.BigEndian.Uint32(msg.wirepacket))
+	if packetlen > MTU {
+		return errors.New(fmt.Sprintf("connrx(term): packetlen %d MTU too small or lost framing sync", packetlen))
+	}
+
+	if packetlen != msg.len {
+		msg.len = packetlen
+		msg.wirepacket = msg.buf[:msg.len+4]
+		msg.packet = msg.wirepacket[4:]
+	}
+
+	return nil
 }
 
 type filterfunc func(*message, filterstack) error
@@ -46,49 +67,43 @@ func connrx(rdr net.Conn, txstack filterstack, readerr chan<- bool, wait *sync.W
 	log.Print("connrx: starting")
 
 	// Forever read
-	header := make([]byte, 4)
 	for {
-		//log.Print("connrx: waiting")
-		// This ends when the connection is closed locally or remotely
-		// Read int header
-		n, err := rdr.Read(header)
-		if nil != err {
-			// Read failed, pumpexit the handler
-			log.Printf("connrx(term): error while reading header: %s", err)
-			return
-		} else if n < len(header) {
-			log.Print("connrx(term): short read")
-			return
-		}
-
-		// Get the packet length as an int
-		packetlen := binary.BigEndian.Uint32(header)
-		if packetlen > MTU {
-			log.Printf("connrx(term): packetlen %d MTU too small or lost framing sync", packetlen)
-			return
-		}
-
 		msg := bufpool.Get().(*message)
-		msg.set(int(packetlen))
+		msg.clr()
 
 		fatal := func(logmsg string, err error) {
 			log.Printf("connrx(term): %s %s", logmsg, err)
-			bufpool.Put(msg) // return the message
+			bufpool.Put(msg)
 		}
 
-		// Read packet
-		//log.Printf("connrx: reading %d byte packet", packetlen)
-		if n, err = rdr.Read(msg.packet); nil != err {
+		if n, err := rdr.Read(msg.wirepacket[:4]); nil != err {
+			fatal("error while reading header", err)
+		} else if n < 4 {
+			fatal("", errors.New("short read"))
+			return
+		}
+
+		// Setup message slices from embedded length
+		if err := msg.eset(); nil != err {
+			fatal("", err)
+			return
+		}
+
+		//log.Print("connrx: waiting")
+		// This ends when the connection is closed locally or remotely
+		// Read int header
+		if n, err := rdr.Read(msg.packet); nil != err {
 			// Read failed, pumpexit the handler
-			fatal("error while reading packet", err)
+			fatal("error while reading body", err)
 			return
 		} else if n < msg.len {
 			fatal("", errors.New("short read"))
 			return
 		}
 
+		//log.Printf("connrx: read %d bytes", msg.len)
 		// Send the packet to the tx stack
-		if err = txstack.next(msg); nil != err {
+		if err := txstack.next(msg); nil != err {
 			fatal("error running filterstack", err)
 			return
 		}
@@ -122,9 +137,8 @@ func tunrx(tun *water.Interface, txstack filterstack, wait *sync.WaitGroup, bufp
 	log.Print("tunrx: starting")
 
 	for {
-		// Make room at the beginning for the packet length
 		msg := bufpool.Get().(*message)
-		msg.set(MTU)
+		msg.clr()
 		n, err := tun.Read(msg.packet)
 
 		//log.Printf("tunrx: got %d byte packet", n)
@@ -139,7 +153,7 @@ func tunrx(tun *water.Interface, txstack filterstack, wait *sync.WaitGroup, bufp
 		// Set message length
 		msg.set(n)
 
-		// Sent the message through the filter stack
+		// Send the message through the filter stack
 		err = txstack.next(msg)
 		if nil != err {
 			log.Printf("tunrx(term): error running stack: %s", err)

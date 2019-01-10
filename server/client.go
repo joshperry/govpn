@@ -41,7 +41,7 @@ type Client struct {
 	name         string // name of the authenticated client
 	// A goroutine in the client connection handler reads packets from this channel and then writes them out the client tls socket
 	// A goroutine in the router reads packets from the tun interface and writes any destined for this client ip, to this channel
-	txstack filterstack
+	tx      chan *message
 	control chan string // A channel to send control messages to the client handler
 }
 
@@ -76,5 +76,6 @@ func NewClient(tlscon *tls.Conn) (*Client, error) {
 		name:      name,
 		connected: time.Now(),
 		publicip:  net.ParseIP(ipstring[0:strings.Index(ipstring, ":")]),
+		tx:        make(chan *message, 1000),
 	}, nil
 }

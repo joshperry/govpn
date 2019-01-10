@@ -1,9 +1,7 @@
 package main
 
 import (
-	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"log"
 	"math"
 	"net"
@@ -61,62 +59,47 @@ func (c Connection) MarshalJSON() ([]byte, error) {
 // tuntx: channel to write packets from the client to the tun adapter
 // tunrx: channel to read packets for the clients from the tun adapter
 func (s *Service) Serve(listener net.Listener, tun *water.Interface, bufpool *sync.Pool, servernet *net.IPNet) {
-	defer s.shutdownGroup.Done()
-	// Close the listener when the server stops
-	defer listener.Close()
+	defer func() {
+		s.shutdownGroup.Done()
+		// Close the listener when the server stops
+		listener.Close()
+		log.Print("service(perm): au revoir")
+	}()
 
-	routecache := newRouteCache()
 	statesub := make(chan ClientStateSub)
 
-	// Keeps the route info updated from the client state chan
-	go route(routecache, statesub)
+	// A channel for the packet routers
+	routers := make(chan *message)
 
-	rxstack := filterstack{
-		// Router logic
-		func(msg *message, stack filterstack) error {
-			// Get destination IP from packet
-			clientip := binary.BigEndian.Uint32(msg.packet[16:20])
-
-			// Get the client route
-			lock := routecache.RLock() // read lock
-			clientstack, ok := routecache.routes[clientip]
-			lock.Unlock()
-
-			// Record metrics
-			//tx_packetsmetric.Inc()
-			//tx_bytesmetric.Add(float64(msg.len))
-
-			// Send the message to the client stack
-			if ok {
-				return clientstack.next(msg)
-			} else {
-				return errors.New("no client route found")
-			}
-		},
+	// Start up multiple routers
+	for _ = range [4]int{} {
+		// Routes packets from the tun adapter to the appropriate client
+		// Keeps the route info updated from the client state chan
+		// Exits when state channel is closed
+		s.shutdownGroup.Add(1)
+		go route(routers, statesub, bufpool, s.shutdownGroup)
 	}
 
-	for _ = range [20]int{} {
-		//s.clientGroup.Add(1) // hacked out because read does not end (see above todo), process termination does
-		go tunrx(tun, rxstack, s.clientGroup, bufpool)
-	}
+	// A channel for messages exiting via the tun interface
+	tuntxchan := make(chan *message)
+	defer close(tuntxchan)
 
-	// Start up multiple readers with separate queues
+	// Producer that reads packets off of the tun interface and delivers them to the router channel
+	go tunrx(tun, routers, bufpool)
+	// Consumer that reads packets off the tuntxchan and puts them on the tun interface
+	go tuntx(tuntxchan, tun, bufpool)
+
+	// Start up multiple readers/writers with separate queues
 	for _ = range [7]int{} {
 		tunconfig := water.Config{DeviceType: water.TUN, PlatformSpecificParams: water.PlatformSpecificParams{MultiQueue: true}}
 		tunconfig.Name = config.Get("tun", "name").String("tun_govpn")
-		iface, err := water.New(tunconfig)
-		if nil != err {
-			log.Fatalln("server: unable to allocate TUN interface:", err)
-		}
-		defer iface.Close()
+		if tun, err := water.New(tunconfig); nil != err {
+			log.Fatalln("server: unable to allocate additional TUN interface queue:", err)
+		} else {
+			defer tun.Close()
 
-		// Multiple pumps per tun queue
-		for _ = range [20]int{} {
-			// Producer that reads packets off of the tun interface delivers them to the appropriate client
-			// Packet source IP is used to query the route cache to find the client
-			// TODO: Read does not end when tun interface is closed, hacking to let process termination close this routine, remember to uncomment wait.Done in tunrx impl
-			//s.clientGroup.Add(1) // hacked out because read does not end (see above todo), process termination does
-			go tunrx(iface, rxstack, s.clientGroup, bufpool)
+			go tunrx(tun, routers, bufpool)
+			go tuntx(tuntxchan, tun, bufpool)
 		}
 	}
 
@@ -157,9 +140,6 @@ func (s *Service) Serve(listener net.Listener, tun *water.Interface, bufpool *sy
 	// Start metrics http server
 	go metrics(reportchan)
 
-	// Set up the tx filter stack
-	txstack := filterstack{tuntx(tun)}
-
 	// Forever select on the done channel, and the client connection handler channel
 	for {
 		select {
@@ -174,6 +154,7 @@ func (s *Service) Serve(listener net.Listener, tun *water.Interface, bufpool *sy
 		case conn, ok := <-connchan:
 			if !ok {
 				log.Print("server: connchan closed", listener.Addr())
+
 				// Wait on the client waitgroup when leaving
 				s.clientGroup.Wait()
 
@@ -184,7 +165,8 @@ func (s *Service) Serve(listener net.Listener, tun *water.Interface, bufpool *sy
 			log.Printf("server: %s connected", conn.RemoteAddr())
 			// Add a client to the waitgroup, and handle it in a goroutine
 			s.clientGroup.Add(1)
-			go s.serve(conn, txstack, bufpool, clientstate, netblock)
+			go s.serve(conn, tuntxchan, clientstate, bufpool, netblock)
+
 			acceptedmetric.Inc()
 		}
 	}
