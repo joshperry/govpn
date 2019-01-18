@@ -66,7 +66,12 @@ func (s *Service) Serve(listener net.Listener, tun *water.Interface, bufpool *sy
 		log.Print("service(perm): au revoir")
 	}()
 
+	// A channel for subscribing the client state stream
 	statesub := make(chan ClientStateSub)
+
+	// A channel for messages exiting via the tun interface
+	tuntxchan := make(chan *message)
+	defer close(tuntxchan)
 
 	// A channel for the packet routers
 	routers := make(chan *message)
@@ -77,12 +82,8 @@ func (s *Service) Serve(listener net.Listener, tun *water.Interface, bufpool *sy
 		// Keeps the route info updated from the client state chan
 		// Exits when state channel is closed
 		s.shutdownGroup.Add(1)
-		go route(routers, statesub, bufpool, s.shutdownGroup)
+		go route(routers, tuntxchan, statesub, bufpool, s.shutdownGroup)
 	}
-
-	// A channel for messages exiting via the tun interface
-	tuntxchan := make(chan *message)
-	defer close(tuntxchan)
 
 	// Producer that reads packets off of the tun interface and delivers them to the router channel
 	go tunrx(tun, routers, bufpool)
