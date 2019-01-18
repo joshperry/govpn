@@ -1,0 +1,51 @@
+version: '2'
+services:
+  vpnserver:
+    image: joshperry/govpn
+    build: .
+    expose:
+      - 443
+      - 9000
+      - 6060
+    ports:
+      - "443:443"
+      - "9000:9000"
+      - "6060:6060"
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - "/dev/net/tun"
+    command: server
+
+  vpnclient1:
+    image: joshperry/govpn
+    build: .
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - "/dev/net/tun"
+    command: client
+    links:
+      - vpnserver
+
+  vpnclient2:
+    image: joshperry/govpn
+    build: .
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - "/dev/net/tun"
+    command: client
+    links:
+      - vpnserver
+
+  vpnclient3:
+    image: joshperry/govpn
+    build: .
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - "/dev/net/tun"
+    command: client
+    links:
+      - vpnserver
