@@ -3,14 +3,21 @@ FROM golang:1.11-alpine AS builder
 RUN apk --no-cache add git gcc musl-dev
 
 WORKDIR /usr/src/app
+
+# Download module deps (for caching)
+COPY  go.mod go.sum ./
+RUN go mod download
+
+# Build
 COPY . .
 
 RUN cd server; go build
 RUN cd client; go build
 
-FROM golang:1.11-alpine
+# Make dist container
+FROM alpine:3.8
 
-RUN apk --no-cache add iperf
+RUN apk --no-cache add iperf tcpdump
 
 WORKDIR /usr/src/app
 

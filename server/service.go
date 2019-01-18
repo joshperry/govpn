@@ -7,6 +7,9 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/micro/go-config"
+	"github.com/songgao/water"
 )
 
 // The VPN server service
@@ -55,17 +58,51 @@ func (c Connection) MarshalJSON() ([]byte, error) {
 // Stop listening if anything is received on the done channel.
 // tuntx: channel to write packets from the client to the tun adapter
 // tunrx: channel to read packets for the clients from the tun adapter
-func (s *Service) Serve(listener net.Listener, tuntx chan<- *message, tunrx <-chan *message, bufpool *sync.Pool, servernet *net.IPNet) {
-	defer s.shutdownGroup.Done()
-	// Close the listener when the server stops
-	defer listener.Close()
+func (s *Service) Serve(listener net.Listener, tun *water.Interface, bufpool *sync.Pool, servernet *net.IPNet) {
+	defer func() {
+		s.shutdownGroup.Done()
+		// Close the listener when the server stops
+		listener.Close()
+		log.Print("service(perm): au revoir")
+	}()
 
+	// A channel for subscribing the client state stream
 	statesub := make(chan ClientStateSub)
 
-	// Route packets bound for clients as they come in the tunrx channel
-	// Uses clientstate channel to keep internal routing table up to date
-	// Exits when tunrx or clientstate channels are closed
-	go route(tunrx, statesub, bufpool)
+	// A channel for messages exiting via the tun interface
+	tuntxchan := make(chan *message)
+	defer close(tuntxchan)
+
+	// A channel for the packet routers
+	routers := make(chan *message)
+
+	// Start up multiple routers
+	for _ = range [4]int{} {
+		// Routes packets from the tun adapter to the appropriate client
+		// Keeps the route info updated from the client state chan
+		// Exits when state channel is closed
+		s.shutdownGroup.Add(1)
+		go route(routers, tuntxchan, statesub, bufpool, s.shutdownGroup)
+	}
+
+	// Producer that reads packets off of the tun interface and delivers them to the router channel
+	go tunrx(tun, routers, bufpool)
+	// Consumer that reads packets off the tuntxchan and puts them on the tun interface
+	go tuntx(tuntxchan, tun, bufpool)
+
+	// Start up multiple readers/writers with separate queues
+	for _ = range [7]int{} {
+		tunconfig := water.Config{DeviceType: water.TUN, PlatformSpecificParams: water.PlatformSpecificParams{MultiQueue: true}}
+		tunconfig.Name = config.Get("tun", "name").String("tun_govpn")
+		if tun, err := water.New(tunconfig); nil != err {
+			log.Fatalln("server: unable to allocate additional TUN interface queue:", err)
+		} else {
+			defer tun.Close()
+
+			go tunrx(tun, routers, bufpool)
+			go tuntx(tuntxchan, tun, bufpool)
+		}
+	}
 
 	// Calculate netblock info
 	netmasklen, networksize := servernet.Mask.Size()
@@ -118,6 +155,7 @@ func (s *Service) Serve(listener net.Listener, tuntx chan<- *message, tunrx <-ch
 		case conn, ok := <-connchan:
 			if !ok {
 				log.Print("server: connchan closed", listener.Addr())
+
 				// Wait on the client waitgroup when leaving
 				s.clientGroup.Wait()
 
@@ -128,7 +166,8 @@ func (s *Service) Serve(listener net.Listener, tuntx chan<- *message, tunrx <-ch
 			log.Printf("server: %s connected", conn.RemoteAddr())
 			// Add a client to the waitgroup, and handle it in a goroutine
 			s.clientGroup.Add(1)
-			go s.serve(conn, tuntx, bufpool, clientstate, netblock)
+			go s.serve(conn, tuntxchan, clientstate, bufpool, netblock)
+
 			acceptedmetric.Inc()
 		}
 	}

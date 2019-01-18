@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	MTU = 1300
+	MTU = 1400
 )
 
 /**
@@ -94,7 +94,7 @@ func main() {
 	servernet.IP = int2ip(ip2int(servernet.IP.Mask(servernet.Mask)) + 1) // Set IP to first in the network
 
 	// Create tun interface
-	tunconfig := water.Config{DeviceType: water.TUN}
+	tunconfig := water.Config{DeviceType: water.TUN, PlatformSpecificParams: water.PlatformSpecificParams{MultiQueue: true}}
 	tunconfig.Name = config.Get("tun", "name").String("tun_govpn")
 	iface, err := water.New(tunconfig)
 	if nil != err {
@@ -112,31 +112,6 @@ func main() {
 	// Disable ipv6 on tun interface
 	err = sysctl.Set("net.ipv6.conf.tun_govpn.disable_ipv6", "1")
 
-	// Waitgroup for waiting on main services to stop
-	mainwait := &sync.WaitGroup{}
-
-	// Create pool of messages
-	bufpool := sync.Pool{
-		New: func() interface{} {
-			return &message{}
-		},
-	}
-
-	// Producer that reads packets off of the tun interface and pushes them on the tunrx channel
-	// Packets put on the tunrx channel are read by the data router that decides where to send them
-	// If this stops pumping then client handler writes to the tuntx channel will stall
-	tunrxchan := make(chan *message)
-	// TODO: Read does not end when tun interface is closed, hacking to let process termination close this routine, remember to uncomment wait.Done in tunrx impl
-	//mainwait.Add(1) // hacked out because read does not end (see above todo), process termination does
-	go tunrx(iface, tunrxchan, mainwait, &bufpool)
-
-	// Consumer that reads packets off of the tuntx channel and writes them to the tun interface
-	// Any packet received on the client tlsclient socket is written to the tuntx channel by a goroutine in `serve()`
-	// Exits when txchan is closed
-	tuntxchan := make(chan *message)
-	mainwait.Add(1)
-	go tuntx(tuntxchan, iface, mainwait, &bufpool)
-
 	// Listen for clients
 	listener, err := tls.Listen(
 		"tcp",
@@ -152,31 +127,36 @@ func main() {
 	}
 	log.Printf("server: listening on %s", listener.Addr().String())
 
+	// Create pool of messages
+	bufpool := sync.Pool{
+		New: func() interface{} {
+			return &message{}
+		},
+	}
+
 	// Create an instance of the VPN server service
 	// Run it 5 times with the active listener to accept connections, tun channels for tun comms, and server network info
 	service := NewService()
-	go service.Serve(listener, tuntxchan, tunrxchan, &bufpool, servernet.IPNet)
+	go service.Serve(listener, iface, &bufpool, servernet.IPNet)
 
 	// Handle SIGINT and SIGTERM
 	sigs := make(chan os.Signal)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
 	// Block waiting for a signal
-	log.Println(<-sigs)
-
-	// Stop the service and disconnect clients gracefully
-	log.Print("server: stopping")
-	service.Stop()
-
-	// Close the tun tx channel
-	log.Print("server: closing tuntx channel")
-	close(tuntxchan)
+	select {
+	case <-sigs:
+		// Stop the service and disconnect clients gracefully
+		log.Print("server(term): got shutdown signal")
+		service.Stop()
+	case <-service.done:
+		log.Print("server: saw done, waiting for shutdown")
+		service.shutdownGroup.Wait()
+	}
 
 	// Close the tun interface
 	log.Print("server: closing tun interface")
 	iface.Close()
 
-	// Wait for main pumps to stop
-	log.Print("server: waiting for main loops")
-	mainwait.Wait()
+	log.Print("server(perm): goodbye")
 }

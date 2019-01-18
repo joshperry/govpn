@@ -15,11 +15,13 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-func service(tlscon *tls.Conn, tunrxchan <-chan *message, tuntxchan chan<- *message, bufpool *sync.Pool, done chan bool, wait *sync.WaitGroup) {
+func service(tlscon *tls.Conn, tuntxstack filterstack, bufpool *sync.Pool, done chan bool, wait *sync.WaitGroup) {
 	defer tlscon.Close()
 
 	if err := tlscon.Handshake(); nil != err {
 		log.Printf("client(term): tls handshake failed: %s", err)
+		close(done)
+		return
 	} else {
 		log.Print("client: tls handshake succeeded")
 	}
@@ -39,6 +41,7 @@ func service(tlscon *tls.Conn, tunrxchan <-chan *message, tuntxchan chan<- *mess
 		})
 		if err != nil {
 			log.Print("(term): error encoding client info packet")
+			close(done)
 			return
 		}
 
@@ -54,6 +57,7 @@ func service(tlscon *tls.Conn, tunrxchan <-chan *message, tuntxchan chan<- *mess
 		request, err := tp.ReadLine()
 		if err != nil {
 			log.Printf("(term): error reading request line: %s", err)
+			close(done)
 			return
 		}
 		log.Print(string(request))
@@ -62,6 +66,7 @@ func service(tlscon *tls.Conn, tunrxchan <-chan *message, tuntxchan chan<- *mess
 		headers, err := tp.ReadMIMEHeader()
 		if err != nil {
 			log.Printf("(term): error reading request headers: %s", err)
+			close(done)
 			return
 		}
 		log.Print("got headers")
@@ -71,6 +76,8 @@ func service(tlscon *tls.Conn, tunrxchan <-chan *message, tuntxchan chan<- *mess
 		bodylen, err := strconv.ParseInt(headers["Content-Length"][0], 10, 64)
 		if err != nil {
 			log.Print("(term): error parsing content-length header")
+			close(done)
+			return
 		}
 
 		// TODO: Protect for content too large
@@ -79,6 +86,7 @@ func service(tlscon *tls.Conn, tunrxchan <-chan *message, tuntxchan chan<- *mess
 		n, err := bufrx.Read(body)
 		if err != nil {
 			log.Print("(term): error reading request body")
+			close(done)
 			return
 		}
 		log.Print("got body")
@@ -87,6 +95,7 @@ func service(tlscon *tls.Conn, tunrxchan <-chan *message, tuntxchan chan<- *mess
 		// Decode client settings struct from json in the respnse
 		if err := json.Unmarshal(body[:n], &settings); err != nil {
 			log.Print("(term): error decoding client settings")
+			close(done)
 			return
 		}
 
@@ -116,26 +125,16 @@ func service(tlscon *tls.Conn, tunrxchan <-chan *message, tuntxchan chan<- *mess
 	// Channel for packets coming from the server
 	// Exits when the read fails
 	wait.Add(1)
-	go connrx(tlscon, tuntxchan, readerr, wait, bufpool)
+	go connrx(tlscon, tuntxstack, readerr, wait, bufpool)
 
-	// A channel to signal a write error to the server
-	writeerr := make(chan bool)
-
-	// Channel for packets bound to the server
-	// Exits when tunrx pump closes or done is closed
-	wait.Add(1)
-	go conntx(tunrxchan, tlscon, writeerr, done, wait, bufpool)
+	// Signal ready for tun traffic
+	done <- true
 
 	// Block waiting for a signal, or an error
 	for {
 		select {
 		case <-done:
 			log.Println("client(term): done closed")
-			return
-
-		case <-writeerr:
-			log.Println("client(term): error writing to server")
-			close(done)
 			return
 
 		case <-readerr:

@@ -67,7 +67,7 @@ func main() {
 	tlsconfig.BuildNameToCertificate()
 
 	// Create tun interface
-	tunconfig := water.Config{DeviceType: water.TUN}
+	tunconfig := water.Config{DeviceType: water.TUN, PlatformSpecificParams: water.PlatformSpecificParams{MultiQueue: true}}
 	tunconfig.Name = "tun_govpnc"
 	iface, err := water.New(tunconfig)
 	if nil != err {
@@ -84,36 +84,42 @@ func main() {
 		},
 	}
 
-	// Pump packets from the tun adapter into a channel
-	// mainwait.Add(1) // Not used for now because closing the tun interface doesn't break the read
-	tunrxchan := make(chan *message)
-	go tunrx(iface, tunrxchan, mainwait, &bufpool)
-
-	// Pump packets from a channel into the tun adapter
-	mainwait.Add(1)
-	tuntxchan := make(chan *message)
-	go tuntx(tuntxchan, iface, mainwait, &bufpool)
-
 	// Connect to server
 	tlscon, err := tls.Dial("tcp", "vpnserver:443", tlsconfig)
 	if nil != err {
 		log.Fatalln("client: connect failed", err)
 	}
 
-	// Handle SIGINT and SIGTERM
-	sigs := make(chan os.Signal)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	// Filter stack for sending packets to the tun iface
+	tuntxstack := filterstack{tuntx(iface)}
 
 	done := make(chan bool)
-	go service(tlscon, tunrxchan, tuntxchan, &bufpool, done, mainwait)
+	go service(tlscon, tuntxstack, &bufpool, done, mainwait)
 
-	select {
-	case sig := <-sigs:
-		log.Printf("client(term): got signal %s", sig)
-		close(done)
-	case <-done:
+	// Wait until the handshake goes well
+	_, ok := <-done
+
+	// If done was closed then there was an error negotiating the client
+	if ok {
+		// Put the conntx filter at the end of the tunrx stack
+		tunrxstack := filterstack{conntx(tlscon)}
+
+		go tunrx(iface, tunrxstack, mainwait, &bufpool)
+
+		// Handle SIGINT and SIGTERM
+		sigs := make(chan os.Signal)
+		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
+		select {
+		case sig := <-sigs:
+			log.Printf("client(term): got signal %s", sig)
+			close(done)
+		case <-done:
+		}
+
+		log.Print("client: waiting for shutdown")
+		mainwait.Wait()
+	} else {
+		log.Print("client(term): client handshake failed")
 	}
-
-	log.Print("client: waiting for shutdown")
-	mainwait.Wait()
 }

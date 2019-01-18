@@ -76,6 +76,6 @@ func NewClient(tlscon *tls.Conn) (*Client, error) {
 		name:      name,
 		connected: time.Now(),
 		publicip:  net.ParseIP(ipstring[0:strings.Index(ipstring, ":")]),
-		tx:        make(chan *message),
+		tx:        make(chan *message, 1000),
 	}, nil
 }
