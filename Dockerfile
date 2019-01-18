@@ -15,9 +15,9 @@ RUN cd server; go build
 RUN cd client; go build
 
 # Make dist container
-FROM golang:1.11-alpine
+FROM alpine:3.8
 
-RUN apk --no-cache add iperf
+RUN apk --no-cache add iperf tcpdump
 
 WORKDIR /usr/src/app
 
