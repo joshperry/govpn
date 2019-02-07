@@ -10,6 +10,10 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/micro/go-config"
+	"github.com/micro/go-config/source/env"
+	"github.com/micro/go-config/source/file"
+	"github.com/micro/go-config/source/flag"
 	"github.com/songgao/water"
 )
 
@@ -35,9 +39,31 @@ type ClientSettings struct {
 func main() {
 	log.SetFlags(log.Lshortfile)
 
+	// Find path to config file before loading config
+	// Get config path from the env
+	configfile := os.Getenv("GOVPN_CONFIG_FILE")
+	// A default value for the config path
+	if configfile == "" {
+		configfile = "config.yaml"
+	}
+
+	config.Load(
+		// base config from file
+		file.NewSource(
+			file.WithPath(configfile),
+		),
+		// override file with env
+		env.NewSource(env.WithStrippedPrefix("GOVPN")),
+		// override env with flags
+		flag.NewSource(),
+	)
+
 	// Load the server's PKI keypair
 	// TODO: Load from config
-	cer, err := tls.LoadX509KeyPair("client.crt", "client.key")
+	cer, err := tls.LoadX509KeyPair(
+		config.Get("tls", "cert").String("client.crt"),
+		config.Get("tls", "key").String("client.key"),
+	)
 	if err != nil {
 		log.Fatalf("client: failed to load server PKI material: %s", err)
 	}
@@ -45,7 +71,7 @@ func main() {
 	// Load server CA cert chain
 	certpool := x509.NewCertPool()
 	// TODO: Load from config
-	pem, err := ioutil.ReadFile("ca.pem")
+	pem, err := ioutil.ReadFile(config.Get("tls", "ca").String("ca.pem"))
 	if err != nil {
 		log.Fatalf("client: failed to read server certificate authority: %v", err)
 	}
@@ -68,7 +94,7 @@ func main() {
 
 	// Create tun interface
 	tunconfig := water.Config{DeviceType: water.TUN, PlatformSpecificParams: water.PlatformSpecificParams{MultiQueue: true}}
-	tunconfig.Name = "tun_govpnc"
+	tunconfig.Name = config.Get("tun", "name").String("tun_govpnc")
 	iface, err := water.New(tunconfig)
 	if nil != err {
 		log.Fatalln("client: unable to allocate TUN interface:", err)
@@ -85,7 +111,7 @@ func main() {
 	}
 
 	// Connect to server
-	tlscon, err := tls.Dial("tcp", "vpnserver:443", tlsconfig)
+	tlscon, err := tls.Dial("tcp", config.Get("server").String("server:443"), tlsconfig)
 	if nil != err {
 		log.Fatalln("client: connect failed", err)
 	}
