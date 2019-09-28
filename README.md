@@ -7,6 +7,16 @@ This diagram details the architectural design in a visual fashion.
 
 On the client and server we have two main gophers to initiate/accept and babysit long-lived TLS connections used to pipe data between the two.
 
+On the server the manager gopher listens for TLS connections from clients and manages their lifetime.
+
+For each client connection the manager creates one gopher for each of the tx and rx data flow for the client.
+
+It also starts a router gopher whose job is to inspect packets coming from the server TUN adapter, and deliver them to the proper client tx gopher channel.
+
+The client tx and rx gophers use a mostly identical data pumping mechanism to deliver incoming packets.
+The tx gopher pumps packets coming from the TUN adapter (from the router on the server) to the TLS connection.
+The rx gopher pumps packets from the TLS connection into the TUN adapter.
+
 On the client side we can see a single instance of the data pumping mechanism.
 Because a client does not need to route packets or scale like a server, we have a fixed count of 3 async tasks: the manager, the tx path, and the rx path.
 
@@ -15,4 +25,4 @@ Backpressure is signalled to the OS by reading packets from the TUN adapter.
 
 I rely on the TCP stack to handle flow control.
 
-https://www.lucidchart.com/invitations/accept/26bbe165-5628-43cf-aa5d-1d2081d1b346)
+https://www.lucidchart.com/invitations/accept/26bbe165-5628-43cf-aa5d-1d2081d1b346
