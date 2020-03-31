@@ -77,7 +77,7 @@ func (s *Service) Serve(listener net.Listener, tun *water.Interface, bufpool *sy
 	routers := make(chan *message)
 
 	// Start up multiple routers
-	for _ = range [4]int{} {
+	for range [4]int{} {
 		// Routes packets from the tun adapter to the appropriate client
 		// Keeps the route info updated from the client state chan
 		// Exits when state channel is closed
@@ -91,7 +91,7 @@ func (s *Service) Serve(listener net.Listener, tun *water.Interface, bufpool *sy
 	go tuntx(tuntxchan, tun, bufpool)
 
 	// Start up multiple readers/writers with separate queues
-	for _ = range [7]int{} {
+	for range [7]int{} {
 		tunconfig := water.Config{DeviceType: water.TUN, PlatformSpecificParams: water.PlatformSpecificParams{MultiQueue: true}}
 		tunconfig.Name = config.Get("tun", "name").String("tun_govpn")
 		if tun, err := water.New(tunconfig); nil != err {

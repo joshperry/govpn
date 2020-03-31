@@ -1,6 +1,6 @@
-version: '2'
+version: '2.4'
 services:
-  vpnserver:
+  server:
     image: joshperry/govpn
     build: .
     expose:
@@ -15,37 +15,16 @@ services:
       - NET_ADMIN
     devices:
       - "/dev/net/tun"
-    command: server
+    command: [ '/server' ]
 
-  vpnclient1:
+  client:
     image: joshperry/govpn
+    scale: 3
     build: .
     cap_add:
       - NET_ADMIN
     devices:
       - "/dev/net/tun"
-    command: client
+    command: [ '/client' ]
     links:
-      - vpnserver
-
-  vpnclient2:
-    image: joshperry/govpn
-    build: .
-    cap_add:
-      - NET_ADMIN
-    devices:
-      - "/dev/net/tun"
-    command: client
-    links:
-      - vpnserver
-
-  vpnclient3:
-    image: joshperry/govpn
-    build: .
-    cap_add:
-      - NET_ADMIN
-    devices:
-      - "/dev/net/tun"
-    command: client
-    links:
-      - vpnserver
+      - server
