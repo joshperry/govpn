@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	_ "net/http/pprof" // Register pprof http handlers
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -84,12 +85,6 @@ var (
 func metrics(reportchan chan<- chan<- Connections) {
 	log.Print("metrics: starting")
 
-	// Launch profiling metrics
-	go func() {
-		log.Print("metrics: pprof http listen on 6060")
-		log.Print(http.ListenAndServe("0.0.0.0:6060", nil))
-	}()
-
 	// Register metrics
 	// Service
 	prometheus.MustRegister(acceptedmetric)
@@ -113,10 +108,9 @@ func metrics(reportchan chan<- chan<- Connections) {
 	prometheus.MustRegister(rx_bytesmetric)
 	prometheus.MustRegister(route_durationmetric)
 
-	msrv := http.NewServeMux()
 	// Expose the registered metrics via HTTP.
-	msrv.Handle("/metrics", promhttp.Handler())
-	msrv.HandleFunc("/clients", func(w http.ResponseWriter, req *http.Request) {
+	http.Handle("/metrics", promhttp.Handler())
+	http.HandleFunc("/clients", func(w http.ResponseWriter, req *http.Request) {
 		// Request connection list from the contrack service
 		respchan := make(chan Connections)
 		reportchan <- respchan
@@ -130,6 +124,7 @@ func metrics(reportchan chan<- chan<- Connections) {
 			w.Write(respbuf)
 		}
 	})
+
 	// TODO: get from config
 	log.Print("metrics: http listen on 9000")
 	log.Fatal(http.ListenAndServe("0.0.0.0:9000", msrv))

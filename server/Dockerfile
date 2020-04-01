@@ -33,6 +33,7 @@ ENV GOVPN_CONFIG_FILE=/config/config.yaml \
 	GOVPN_TLS_CA=/config/ca.pem
 
 EXPOSE 443
+EXPOSE 9000
 
 # Run as nobody
 USER root
