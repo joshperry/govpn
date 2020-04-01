@@ -1,0 +1,7 @@
+server: server:443
+tun:
+  name: tun_govpnc
+tls:
+  cert: config/cert.pem
+  key: config/key.pem
+  ca: config/ca.pem

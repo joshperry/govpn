@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/micro/go-config"
+	"github.com/micro/go-micro/v2/config"
 	"github.com/songgao/water"
 )
 

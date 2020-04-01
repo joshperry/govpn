@@ -1,12 +1,15 @@
 version: '2.4'
 services:
   server:
-    image: joshperry/govpn
-    build: .
-    expose:
-      - 443
-      - 9000
-      - 6060
+    image: joshperry/govpn:test
+    environment:
+      GOVPN_CONFIG_FILE: /server_config/config.yaml
+      GOVPN_TLS_CERT: /server_config/cert.pem
+      GOVPN_TLS_KEY: /server_config/key.pem
+      GOVPN_TLS_CA: /server_config/ca.pem
+    build:
+      context: .
+      dockerfile: Dockerfile.test
     ports:
       - "443:443"
       - "9000:9000"
@@ -18,9 +21,16 @@ services:
     command: [ '/server' ]
 
   client:
-    image: joshperry/govpn
-    scale: 3
-    build: .
+    image: joshperry/govpn:test
+    scale: 1
+    environment:
+      GOVPN_CONFIG_FILE: /client_config/config.yaml
+      GOVPN_TLS_CERT: /client_config/cert.pem
+      GOVPN_TLS_KEY: /client_config/key.pem
+      GOVPN_TLS_CA: /client_config/ca.pem
+    build:
+      context: .
+      dockerfile: Dockerfile.test
     cap_add:
       - NET_ADMIN
     devices:

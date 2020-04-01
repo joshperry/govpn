@@ -4,8 +4,8 @@ listen:
   address: 0.0.0.0
   port: 443
 tls:
-  cert: server.crt
-  key: server.key
-  ca: ca.pem
+  cert: config/cert.pem
+  key: config/key.pem
+  ca: config/ca.pem
 secnet:
   block: 192.168.1.1/21

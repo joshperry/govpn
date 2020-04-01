@@ -10,10 +10,9 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/micro/go-config"
-	"github.com/micro/go-config/source/env"
-	"github.com/micro/go-config/source/file"
-	"github.com/micro/go-config/source/flag"
+	"github.com/micro/go-micro/v2/config"
+	"github.com/micro/go-micro/v2/config/source/env"
+	"github.com/micro/go-micro/v2/config/source/file"
 	"github.com/songgao/water"
 )
 
@@ -54,15 +53,13 @@ func main() {
 		),
 		// override file with env
 		env.NewSource(env.WithStrippedPrefix("GOVPN")),
-		// override env with flags
-		flag.NewSource(),
 	)
 
 	// Load the server's PKI keypair
 	// TODO: Load from config
 	cer, err := tls.LoadX509KeyPair(
-		config.Get("tls", "cert").String("client.crt"),
-		config.Get("tls", "key").String("client.key"),
+		config.Get("tls", "cert").String("cert.pem"),
+		config.Get("tls", "key").String("key.pem"),
 	)
 	if err != nil {
 		log.Fatalf("client: failed to load server PKI material: %s", err)
