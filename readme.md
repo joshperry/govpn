@@ -12,7 +12,7 @@ The configuration values can be set via a `config.yaml` file in the `cwd`, via e
 
 The config file path can be specified in `GOVPN_CONFIG_FILE`.
 
-Variables must be uppercase, with each part separated by underscore, and prefixed with `GOVPN` (e.g. GOVPN_LISTEN_ADDRESS).
+Variables must be uppercase, with each part separated by underscore, and prefixed with `GOVPN` (e.g. `GOVPN_LISTEN_ADDRESS`).
 
 ### Server
 
@@ -31,7 +31,7 @@ Variables must be uppercase, with each part separated by underscore, and prefixe
 
 - server (server:443): The hostname:port of the VPN server.
 
-- tun.name (tun_govpn): The device name for the tun adapter.
+- tun.name (tun_govpnc): The device name for the tun adapter.
 
 - tls.cert (client.crt): The client cert chain in PEM format.
 - tls.key (client.key): The client private key in PEM format.
